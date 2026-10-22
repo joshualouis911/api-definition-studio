@@ -27,7 +27,7 @@ your own model, or start from an empty one.
 Needs Python 3.9 or later.
 
 ```bash
-git clone https://github.com/<your-account>/api-definition-studio.git
+git clone https://github.com/joshualouis911/api-definition-studio.git
 cd api-definition-studio
 python3 -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
@@ -35,7 +35,7 @@ pip install .
 api-definition-studio              # http://127.0.0.1:8100/
 ```
 
-Or straight from GitHub: `pip install git+https://github.com/<your-account>/api-definition-studio.git`.
+Or straight from GitHub: `pip install git+https://github.com/joshualouis911/api-definition-studio.git`.
 
 Options: `api-definition-studio run --port 8100 --host 127.0.0.1 --data ./studio-data`.
 The model is saved as `studio-data/model.json` in the folder you start it from

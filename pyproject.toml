@@ -28,8 +28,8 @@ dependencies = [
 test = ["pytest>=7", "httpx>=0.24", "openapi-spec-validator>=0.7"]
 
 [project.urls]
-Homepage = "https://github.com/<your-account>/api-definition-studio"
-Issues = "https://github.com/<your-account>/api-definition-studio/issues"
+Homepage = "https://github.com/joshualouis911/api-definition-studio"
+Issues = "https://github.com/joshualouis911/api-definition-studio/issues"
 
 [project.scripts]
 api-definition-studio = "api_definition_studio.cli:main"
