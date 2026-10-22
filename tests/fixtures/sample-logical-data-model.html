@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Order Management Logical Data Model</title>
+<style>
+:root { --bg: #f6f7f9; --ink: #18202a; --muted: #5d6875; --rule: #d6dbe1; --code: #eceff3; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { --bg: #10161d; --ink: #e3e8ee; --muted: #98a3b0; --rule: #2a3542; --code: #1b2531; }
+}
+:root[data-theme="dark"] { --bg: #10161d; --ink: #e3e8ee; --muted: #98a3b0; --rule: #2a3542; --code: #1b2531; }
+body { background: var(--bg); color: var(--ink); font: 15px/1.55 system-ui, sans-serif; margin: 0; padding: 32px 16px 64px; }
+.wrap { max-width: 1040px; margin: 0 auto; display: grid; gap: 40px; }
+.code-tag { font: 600 12px ui-monospace, monospace; background: var(--code); padding: 2px 8px; border-radius: 4px; }
+.muted { color: var(--muted); }
+pre.mermaid { background: var(--code); padding: 12px; overflow-x: auto; font-size: 13px; }
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+th, td { border-bottom: 1px solid var(--rule); padding: 6px 8px; text-align: left; vertical-align: top; }
+td.ent { font-family: ui-monospace, monospace; white-space: nowrap; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>Order management logical data model</h1>
+  <p class="muted">A worked example of an L2 logical model page: subject areas, Mermaid ER diagrams and an entity catalogue. Used by the tests and as a template for your own models.</p>
+</header>
+
+<section id="scope">
+  <h3>Reading the diagrams</h3>
+  <p class="muted">An entity with no attribute list inside a section is defined in another section.</p>
+</section>
+
+<section id="spine">
+  <div class="section-head">
+    <span class="code-tag">CORE</span>
+    <h2>Core spine</h2>
+    <p class="muted">How the subject areas connect. Attributes are in the sections that follow.</p>
+  </div>
+<pre class="mermaid">
+erDiagram
+  CUSTOMER ||--o{ ACCOUNT : "holds"
+  ACCOUNT ||--o{ SALES_ORDER : "places"
+  SALES_ORDER ||--|{ ORDER_LINE : "contains"
+  PRODUCT ||--o{ ORDER_LINE : "is ordered on"
+  SALES_ORDER ||--o{ INVOICE : "is billed by"
+  INVOICE }o--o{ PAYMENT : "is settled by"
+  SALES_ORDER ||--o{ SHIPMENT : "is fulfilled by"
+</pre>
+</section>
+
+<!-- CUS -->
+<section id="cus">
+  <div class="section-head">
+    <span class="code-tag">CUS</span>
+    <h2>Customers and accounts</h2>
+    <p class="muted">Who buys, where they live, and the accounts they buy through.</p>
+  </div>
+<pre class="mermaid">
+erDiagram
+  CUSTOMER ||--o{ CUSTOMER_ADDRESS : "has"
+  CUSTOMER ||--o{ ACCOUNT_CONTACT : "acts for"
+  ACCOUNT ||--|{ ACCOUNT_CONTACT : "is managed by"
+  CUSTOMER ||--o{ ACCOUNT : "holds"
+  CUSTOMER {
+    id customer_id PK
+    string customer_number "shown on letters"
+    string full_name
+    date date_of_birth
+    string email
+    enum segment "consumer, small business or enterprise"
+    bool marketing_opt_in
+  }
+  CUSTOMER_ADDRESS {
+    id address_id PK
+    id customer_id FK
+    enum address_type "billing, delivery"
+    text address
+    string postcode
+    date valid_from
+    date valid_to
+  }
+  ACCOUNT {
+    id account_id PK
+    id holder_customer_id FK "account holder"
+    string account_number
+    enum status "open, on hold, closed"
+    money credit_limit
+    date opened_date
+  }
+  ACCOUNT_CONTACT {
+    id account_id PK, FK
+    id customer_id PK, FK
+    enum role "owner, buyer or approver"
+  }
+</pre>
+  <table class="catalogue">
+    <thead><tr><th>Entity</th><th>What it records</th><th>Rules it carries</th><th>Ref</th></tr></thead>
+    <tbody>
+      <tr><td class="ent">CUSTOMER</td><td>Any person or organisation that buys from us.</td><td>One customer can hold several accounts and act for others.</td><td class="ref">CUS-01</td></tr>
+      <tr><td class="ent">CUSTOMER_ADDRESS</td><td>Billing and delivery address history.</td><td>Only one current address of each type.</td><td class="ref">CUS-02</td></tr>
+      <tr><td class="ent">ACCOUNT</td><td>A trading account with a credit limit.</td><td>An account on hold cannot place new orders.</td><td class="ref">CUS-03</td></tr>
+      <tr><td class="ent">ACCOUNT_CONTACT</td><td>The people allowed to act on an account.</td><td>Every account has exactly one owner.</td><td class="ref">CUS-04</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ORD -->
+<section id="ord">
+  <div class="section-head">
+    <span class="code-tag">ORD</span>
+    <h2>Orders and products</h2>
+    <p class="muted">What is ordered, by which account, and the catalogue it is ordered from.</p>
+  </div>
+<pre class="mermaid">
+erDiagram
+  ACCOUNT ||--o{ SALES_ORDER : "places"
+  SALES_ORDER ||--|{ ORDER_LINE : "contains"
+  PRODUCT ||--o{ ORDER_LINE : "is ordered on"
+  SALES_ORDER |o--o{ SALES_ORDER : "replaces"
+  SALES_ORDER {
+    id order_id PK
+    id account_id FK
+    id replaced_order_id FK
+    string order_number
+    enum channel "web, phone or store"
+    enum status "draft, placed, fulfilled, cancelled"
+    datetime placed_at
+    money order_total
+  }
+  ORDER_LINE {
+    id order_line_id PK
+    id order_id FK
+    id product_id FK
+    int quantity
+    money unit_price
+    money line_total
+  }
+  PRODUCT {
+    id product_id PK
+    string sku
+    string name
+    enum category "hardware, software or service"
+    money list_price
+    bool discontinued
+  }
+</pre>
+  <table class="catalogue">
+    <thead><tr><th>Entity</th><th>What it records</th><th>Rules it carries</th><th>Ref</th></tr></thead>
+    <tbody>
+      <tr><td class="ent">SALES_ORDER</td><td>One order placed by an account through one channel.</td><td>An order can replace an earlier cancelled order.</td><td class="ref">ORD-01–ORD-02</td></tr>
+      <tr><td class="ent">ORDER_LINE</td><td>One product and quantity on an order.</td><td>The line total is the quantity times the unit price.</td><td class="ref">ORD-03</td></tr>
+      <tr><td class="ent">PRODUCT</td><td>An item in the catalogue.</td><td>Discontinued products cannot be ordered.</td><td class="ref">ORD-04</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- BIL -->
+<section id="bil">
+  <div class="section-head">
+    <span class="code-tag">BIL</span>
+    <h2>Billing and payments</h2>
+    <p class="muted">Invoices raised for orders and the payments that settle them.</p>
+  </div>
+<pre class="mermaid">
+erDiagram
+  SALES_ORDER ||--o{ INVOICE : "is billed by"
+  INVOICE ||--o{ PAYMENT_ALLOCATION : "is settled by"
+  PAYMENT ||--|{ PAYMENT_ALLOCATION : "is split into"
+  INVOICE {
+    id invoice_id PK
+    id order_id FK
+    string invoice_number
+    date issued_on
+    date due_on
+    money amount_due
+    enum status "issued, part paid, paid or written off"
+  }
+  PAYMENT {
+    id payment_id PK
+    string reference
+    money amount
+    date paid_on
+    enum method "card, bank transfer or direct debit"
+  }
+  PAYMENT_ALLOCATION {
+    id payment_id PK, FK
+    id invoice_id PK, FK
+    money allocated_amount
+  }
+</pre>
+  <table class="catalogue">
+    <thead><tr><th>Entity</th><th>What it records</th><th>Rules it carries</th><th>Ref</th></tr></thead>
+    <tbody>
+      <tr><td class="ent">INVOICE</td><td>A bill for all or part of an order.</td><td>The amount due never exceeds the order total.</td><td class="ref">BIL-01</td></tr>
+      <tr><td class="ent">PAYMENT</td><td>Money received from a customer.</td><td>A payment can settle several invoices.</td><td class="ref">BIL-02</td></tr>
+      <tr><td class="ent">PAYMENT_ALLOCATION</td><td>How much of a payment went to each invoice.</td><td>Allocations add up to the payment amount.</td><td class="ref">BIL-03</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- FUL -->
+<section id="ful">
+  <div class="section-head">
+    <span class="code-tag">FUL</span>
+    <h2>Fulfilment</h2>
+    <p class="muted">Shipments that deliver orders, and the warehouses they leave from.</p>
+  </div>
+<pre class="mermaid">
+erDiagram
+  SALES_ORDER ||--o{ SHIPMENT : "is fulfilled by"
+  WAREHOUSE ||--o{ SHIPMENT : "dispatches"
+  SHIPMENT ||--|{ SHIPMENT_LINE : "carries"
+  ORDER_LINE ||--o{ SHIPMENT_LINE : "is shipped as"
+  SHIPMENT {
+    id shipment_id PK
+    id order_id FK
+    id warehouse_id FK
+    string tracking_number
+    enum carrier "post, courier or collection"
+    datetime dispatched_at
+    datetime delivered_at
+  }
+  SHIPMENT_LINE {
+    id shipment_line_id PK
+    id shipment_id FK
+    id order_line_id FK
+    int quantity
+  }
+  WAREHOUSE {
+    id warehouse_id PK
+    string name
+    string postcode
+  }
+</pre>
+  <table class="catalogue">
+    <thead><tr><th>Entity</th><th>What it records</th><th>Rules it carries</th><th>Ref</th></tr></thead>
+    <tbody>
+      <tr><td class="ent">SHIPMENT</td><td>One delivery of some or all of an order.</td><td>An order can ship in several parts.</td><td class="ref">FUL-01</td></tr>
+      <tr><td class="ent">SHIPMENT_LINE</td><td>How many of an order line went in a shipment.</td><td>Shipped quantities never exceed the ordered quantity.</td><td class="ref">FUL-02</td></tr>
+      <tr><td class="ent">WAREHOUSE</td><td>A site that dispatches orders.</td><td></td><td class="ref">FUL-03</td></tr>
+    </tbody>
+  </table>
+</section>
+
+</div>
+</body>
+</html>

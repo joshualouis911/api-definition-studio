@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "api-definition-studio"
+version = "1.24.0"
+description = "Design API resources over source-system entities and generate OpenAPI, a mapping sheet and a data model diagram"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.9"
+keywords = ["openapi", "api-design", "data-mapping", "siebel", "erd", "fastapi"]
+classifiers = [
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Framework :: FastAPI",
+  "Topic :: Software Development :: Code Generators",
+]
+dependencies = [
+  "fastapi>=0.100",
+  "uvicorn>=0.22",
+  "pydantic>=2.0",
+  "openpyxl>=3.1",
+  "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=7", "httpx>=0.24", "openapi-spec-validator>=0.7"]
+
+[project.urls]
+Homepage = "https://github.com/<your-account>/api-definition-studio"
+Issues = "https://github.com/<your-account>/api-definition-studio/issues"
+
+[project.scripts]
+api-definition-studio = "api_definition_studio.cli:main"
+
+[tool.setuptools]
+packages = ["api_definition_studio"]
+
+[tool.setuptools.package-data]
+api_definition_studio = ["static/*"]
