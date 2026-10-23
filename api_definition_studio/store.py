@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional
 
 from . import naming
 from .model import SUB_OPS, Model, clean_tags
+from . import variants
 from .source_kinds import KINDS, default_tokens
 from .sample import sample_model
 
@@ -116,6 +117,7 @@ def fill_defaults(m: Dict[str, Any]) -> Dict[str, Any]:
             g["id"] = g["id"] or new_id("cg")
             g["business_name"] = (g["business_name"] or " ".join(naming.words(g["api_name"])).capitalize()).strip()
             g["api_name"] = (g["api_name"] or naming.camel(g["business_name"])).strip()
+        variants.clean(e, new_id)
         gids = {g["id"] for g in e.get("column_groups") or []}
         for a in e["attributes"]:
             a["id"] = a["id"] or new_id("at")

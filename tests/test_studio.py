@@ -2269,8 +2269,11 @@ def test_notes_example(client):
     text = json.dumps(doc)
     assert "x-source" not in text and "S_NOTE" not in text and "x-transform" not in text
     full = client.get("/api/openapi/notes.json?view=full").json()
-    assert full["components"]["schemas"]["Note"]["properties"]["parent"]["properties"]["type"]["x-source-values"][
-        "service-request"].startswith("Service Request Note")
+    note = full["components"]["schemas"]["Note"]
+    assert note["x-source-variants"]["selected-by"] == "parent.type"
+    assert note["x-source-variants"]["variants"]["contact"]["x-source-object"] == "Contact Note"
+    assert note["properties"]["text"]["x-source-variants"]["contact"]["x-source-column"] == "S_NOTE_CON.NOTE"
+    assert note["properties"]["parent"]["properties"]["scopeId"]["x-source-variants"]["contact"] == {"x-not-applicable": True}
     # no enum style warnings: kebab-case is the namespace's style
     assert not [i for i in client.get("/api/validate").json() if "Enum codes" in i["message"]]
     # adding it again changes nothing
@@ -2319,3 +2322,63 @@ def test_contract_only_openapi(client):
     client.patch("/api/namespaces/ns_cm", json={"source_in_openapi": True})
     assert client.post("/api/import/mapping?apply=true", content=x).status_code == 200
     assert model(client)["namespaces"][0]["source_in_openapi"] is False
+
+
+def test_source_variants(client):
+    """One entity, sources chosen by a column's value: a mapping per variant, inherited where blank."""
+    r = client.patch("/api/entities/en_case", json={"varies_by": "at_k_svc", "source_variants": [
+        {"id": "sv_std", "code": "STANDARD", "source_object": "HLS Case", "location_prefix": "S_CASE"}]})
+    assert r.status_code == 200, r.text
+    iss = [i["message"] for i in client.get("/api/validate").json() if i["object_id"] == "en_case"]
+    assert any("'PREMIUM' has no source variant" in x for x in iss)
+    client.patch("/api/entities/en_case", json={"source_variants": [
+        {"id": "sv_std", "code": "STANDARD", "source_object": "HLS Case", "location_prefix": "S_CASE"},
+        {"id": "sv_prem", "code": "PREMIUM", "source_object": "Premium Case", "location_prefix": "S_CASE_PREM"}]})
+    client.patch("/api/attributes/at_k_num", json={"variant_sources": {
+        "sv_prem": {"source_field": "Premium Case No", "source_column": "S_CASE_PREM.CASE_NO"}}})
+    client.patch("/api/attributes/at_k_stg", json={"variant_sources": {"sv_prem": {"not_applicable": True}}})
+    client.post("/api/entities/en_case/attributes", json={"business_name": "Priority"})
+    msgs = {i["where"]: i["message"] for i in client.get("/api/validate").json() if i["where"].startswith("Case")}
+    assert msgs["Case › Priority"] == "No BC field mapped for STANDARD, PREMIUM."
+    assert "Case › Case Stage" not in msgs                       # not applicable for PREMIUM, mapped for STANDARD
+    full = spec(client)["components"]["schemas"]["Case"]
+    assert full["x-source-variants"]["variants"]["PREMIUM"]["x-source-object"] == "Premium Case"
+    num = full["properties"]["caseNumber"]["x-source-variants"]
+    assert num["STANDARD"] == {"x-source-field": "Case Num", "x-source-column": "S_CASE.CASE_NUM",
+                               "x-dd-attribute": "DD-CAS-002"}                           # all inherited
+    assert num["PREMIUM"] == {"x-source-field": "Premium Case No", "x-source-column": "S_CASE_PREM.CASE_NO",
+                              "x-dd-attribute": "DD-CAS-002"}                            # DD reference inherited
+    assert full["properties"]["stage"]["x-source-variants"]["PREMIUM"] == {"x-not-applicable": True}
+    assert "x-source-field" not in full["properties"]["caseNumber"]       # the per-variant mapping replaces it
+    assert "x-source-variants" not in client.get("/api/openapi/cm.json?view=contract").text
+    validate_spec(spec(client))
+    # the dictionary is checked per variant
+    _load_dictionary(client)
+    dmsgs = [i["message"] for i in client.get("/api/validate").json() if i["where"].startswith("Case")]
+    assert any("'Premium Case' is not in the dictionary (source variant PREMIUM)" in x for x in dmsgs)
+    # mapping sheet round trip
+    before = spec(client)
+    x = client.get("/api/export/mapping.xlsx").content
+    wb = load_workbook(io.BytesIO(x))
+    assert {"Source variants", "Variant mapping"} <= set(wb.sheetnames)
+    rows = list(wb["Variant mapping"].iter_rows(min_row=3, values_only=True))
+    hdr = [c.value for c in wb["Variant mapping"][2]]
+    row = next(r for r in rows if r[hdr.index("Value")] == "PREMIUM" and r[hdr.index("Column")] == "caseNumber")
+    assert row[hdr.index("Effective location")] == "S_CASE_PREM.CASE_NO"
+    client.patch("/api/entities/en_case", json={"source_variants": [], "varies_by": ""})
+    assert client.post("/api/import/mapping?apply=true", content=x).status_code == 200
+    after = spec(client)
+    for d in (before, after):
+        d["info"].pop("x-model-fingerprint")
+    assert before == after
+    # a variant code that is not a value, and a varies-by column that is not an enum (ids change on import)
+    case = next(e for e in model(client)["entities"] if e["schema_name"] == "Case")
+    ids = {a["api_name"]: a["id"] for a in case["attributes"]}
+    assert client.patch("/api/entities/" + case["id"], json={"source_variants": [{"code": "GOLD", "source_object": "X"}]}).status_code == 200
+    assert any("'GOLD' is not a value" in i["message"] for i in client.get("/api/validate").json())
+    client.patch("/api/entities/" + case["id"], json={"varies_by": ids["caseNumber"]})
+    assert any("must be an enum" in i["message"] for i in client.get("/api/validate").json())
+    # removing a variant drops its overrides
+    client.patch("/api/entities/" + case["id"], json={"varies_by": ids["serviceType"], "source_variants": []})
+    case = next(e for e in model(client)["entities"] if e["schema_name"] == "Case")
+    assert all(a["variant_sources"] == {} for a in case["attributes"])

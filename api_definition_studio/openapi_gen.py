@@ -10,7 +10,7 @@ import json
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
-from . import __version__, naming
+from . import __version__, naming, variants
 from .model import INVERSE_CARDINALITY, derived_from, to_many
 from .source_kinds import ext_name
 from .validate import nav_properties
@@ -99,7 +99,8 @@ def typed_example(a: Dict[str, Any]) -> Any:
     return ex
 
 
-def attr_schema(a: Dict[str, Any], src: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def attr_schema(a: Dict[str, Any], src: Optional[Dict[str, Any]] = None,
+                e: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     t = a["type"]
     s: Dict[str, Any] = {}
     money = is_money(a)
@@ -135,6 +136,20 @@ def attr_schema(a: Dict[str, Any], src: Optional[Dict[str, Any]] = None) -> Dict
     if ex is not None:
         s["example"] = ex
     s["x-business-name"] = a["business_name"]
+    if e is not None and variants.has_variants(e):
+        # the source depends on the record: each variant's mapping, in full
+        per = variants.extension(e, a, src)
+        if per:
+            s["x-source-variants"] = per
+        if a.get("system"):
+            s["x-system-column"] = True
+        if t == "enum" and any(v["source_value"] for v in a["enum"]):
+            s["x-source-values"] = {v["code"]: v["source_value"] for v in a["enum"]}
+        if a["lov_type"]:
+            s[ext_name(src, "code_list")] = a["lov_type"]
+        if a["pii"]:
+            s["x-pii"] = True
+        return s
     if a.get("dd_reference"):
         s["x-dd-attribute"] = a["dd_reference"]
     if a.get("data_item"):
@@ -469,7 +484,7 @@ def build_openapi(m: Dict[str, Any], ns_id: str, trace: Optional[List[Dict[str, 
         props: Dict[str, Any] = {}
         required: List[str] = []
         for a in e["attributes"]:
-            props[a["api_name"]] = attr_schema(a, source_of(m, e))
+            props[a["api_name"]] = attr_schema(a, source_of(m, e), e)
             drv, other = derived_from(e, a)
             if drv:
                 props[a["api_name"]]["x-derived"] = True
@@ -513,6 +528,8 @@ def build_openapi(m: Dict[str, Any], ns_id: str, trace: Optional[List[Dict[str, 
             sch["x-source-object"] = e["source_object"]
         if e["source_io"]:
             sch[ext_name(src, "container")] = e["source_io"]
+        if variants.has_variants(e):
+            sch["x-source-variants"] = variants.entity_extension(e, src)
         sch["example"] = example_object(m, e)
         schemas[e["schema_name"]] = sch
 
@@ -525,10 +542,10 @@ def build_openapi(m: Dict[str, Any], ns_id: str, trace: Optional[List[Dict[str, 
             for a in e["attributes"]:
                 if a["read_only"]:
                     continue
-                uprops[a["api_name"]] = attr_schema(a, source_of(m, e))
+                uprops[a["api_name"]] = attr_schema(a, source_of(m, e), e)
                 if a.get("system"):
                     continue
-                iprops[a["api_name"]] = attr_schema(a, source_of(m, e))
+                iprops[a["api_name"]] = attr_schema(a, source_of(m, e), e)
                 if a["required"]:
                     ireq.append(a["api_name"])
             iprops, ireq = group_properties(e, iprops, ireq, "create")
@@ -844,7 +861,7 @@ def build_openapi(m: Dict[str, Any], ns_id: str, trace: Optional[List[Dict[str, 
         schema <OperationId>Request."""
         want, req_ids = set(field_ids), set(required_ids)
         attrs = [a for a in ent["attributes"] if a["id"] in want]
-        props = {a["api_name"]: attr_schema(a, source_of(m, ent)) for a in attrs}
+        props = {a["api_name"]: attr_schema(a, source_of(m, ent), ent) for a in attrs}
         req_ = [a["api_name"] for a in attrs if a["id"] in req_ids]
         props, req_ = group_properties(ent, props, req_, "create")
         name = naming.pascal(op_id) + "Request"
@@ -899,7 +916,7 @@ def build_openapi(m: Dict[str, Any], ns_id: str, trace: Optional[List[Dict[str, 
         if not attrs:
             return ent["schema_name"]
         name = naming.pascal(op_id) + "Response"
-        props = {a["api_name"]: attr_schema(a, source_of(m, ent)) for a in attrs}
+        props = {a["api_name"]: attr_schema(a, source_of(m, ent), ent) for a in attrs}
         req_ = [a["api_name"] for a in attrs if a["key"] or a["required"]]
         props, req_ = group_properties(ent, props, req_, "full")
         ex = group_example(ent, {a["api_name"]: typed_example(a) for a in attrs if typed_example(a) is not None})

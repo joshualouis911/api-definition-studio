@@ -346,49 +346,55 @@ def notes(model: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
     g = "cg_note_parent"
     attrs = [
         _attr("at_note_id", "Note Id", "noteId", key=True, read_only=True, system=True, example="nt-3f9a1c27",
-              pattern="^nt-[a-z0-9]{8,}$", source_field="Id", source_column="S_NOTE_*.ROW_ID",
+              pattern="^nt-[a-z0-9]{8,}$", source_field="Id", source_column="ROW_ID",
               transform="Opaque id that carries the parent type and the Siebel row id (e.g. base64url of "
                         "'service-request:1-8ABC12'), so GET /notes/{noteId} finds the right table.",
               description="Stable, opaque identifier of the note. Don't parse it."),
         _attr("at_note_ptype", "Parent Type", "type", "enum", required=True, group_id=g,
-              enum=_kebab_enum("service-request|Service request|Service Request Note (S_NOTE_SR)",
-                               "contact|Contact|Contact Note (S_NOTE_CON)",
-                               "activity|Activity|Action Note (S_NOTE_ACT)"),
+              enum=_kebab_enum("service-request|Service request", "contact|Contact", "activity|Activity"),
               example="service-request",
-              transform="Routing, not a stored field: picks the business component and table (the enum's source "
-                        "values).",
+              transform="Routing, not a stored field: picks the source variant (business component and table).",
               description="The kind of record the note belongs to. New kinds are added as new values."),
         _attr("at_note_pid", "Parent Id", "id", required=True, group_id=g, max_length=64, example="SR-12345",
-              source_field="Parent Id (by parent type)",
-              transform="Resolve the parent's public id (e.g. SR number) to its Siebel row id within the scope.",
+              transform="Resolve the parent's public id to its row id; the note's link column to its parent is set "
+                        "per source variant.",
+              variant_sources={
+                  "sv_note_sr": {"transform": "SR number (within the domain) to the service request's row id; the "
+                                              "note's link to it is its service request id field."},
+                  "sv_note_con": {"transform": "The contact's public id to its row id; the note's link to it is its "
+                                               "contact id field."},
+                  "sv_note_act": {"transform": "The activity id to its row id; the note's link to it is its "
+                                               "activity id field."}},
               description="The parent's identifier as consumers know it, e.g. the service request number."),
         _attr("at_note_pstype", "Parent Scope Type", "scopeType", "enum", group_id=g,
               enum=_kebab_enum("domain|Domain"), example="domain",
               transform="Not stored on the note: says how to read scopeId.",
+              variant_sources={"sv_note_con": {"not_applicable": True}, "sv_note_act": {"not_applicable": True}},
               description="What scopeId names. Send it with scopeId when the parent's id is only unique within a "
                           "scope; for a service request the domain."),
         _attr("at_note_psid", "Parent Scope Id", "scopeId", group_id=g, max_length=64, example="retail-uk",
               pattern="^[a-z0-9]+(-[a-z0-9]+)*$",
-              transform="Resolved to the organisation (business unit) that owns the parent record; used with "
+              transform="Resolved to the organisation (business unit) that owns the service request; used with "
                         "parent.id to find it.",
+              variant_sources={"sv_note_con": {"not_applicable": True}, "sv_note_act": {"not_applicable": True}},
               description="The scope the parent's id belongs to, e.g. the domain retail-uk."),
         _attr("at_note_type", "Note Type", "noteType", "enum",
               enum=_kebab_enum("general|General|Note", "call|Call|Call", "email|Email|Email",
                                "complaint|Complaint|Complaint"),
-              source_field="Note Type", source_column="S_NOTE_*.NOTE_TYPE", example="call"),
+              source_field="Note Type", source_column="NOTE_TYPE", example="call"),
         _attr("at_note_text", "Note Text", "text", required=True, max_length=16000, source_field="Note",
-              source_column="S_NOTE_*.NOTE", example="Customer called to confirm the delivery date."),
+              source_column="NOTE", example="Customer called to confirm the delivery date."),
         _attr("at_note_priv", "Private", "private", "boolean", source_field="Private",
-              source_column="S_NOTE_*.PRIVATE_FLG", transform="Y/N to true/false", example="false",
+              source_column="PRIVATE_FLG", transform="Y/N to true/false", example="false",
               description="Only visible to the author's team when true."),
         _attr("at_note_cat", "Created At", "createdAt", "date-time", read_only=True, system=True, filterable=True,
-              filter_match="range", source_field="Created", source_column="S_NOTE_*.CREATED",
+              filter_match="range", source_field="Created", source_column="CREATED",
               example="2026-10-23T09:15:00Z"),
         _attr("at_note_cby", "Created By", "createdBy", read_only=True, system=True, source_field="Created By",
-              source_column="S_NOTE_*.CREATED_BY", transform="Row id to the user's login (S_USER.LOGIN).",
+              source_column="CREATED_BY", transform="Row id to the user's login (S_USER.LOGIN).",
               example="jsmith"),
         _attr("at_note_upd", "Updated At", "updatedAt", "date-time", read_only=True, system=True,
-              source_field="Updated", source_column="S_NOTE_*.LAST_UPD", example="2026-10-23T09:20:00Z"),
+              source_field="Updated", source_column="LAST_UPD", example="2026-10-23T09:20:00Z"),
     ]
     by_parent = [{"attr_id": "at_note_ptype", "required": True, "match": "equals", "name": "parentType", "location": "query"},
                  {"attr_id": "at_note_pid", "required": True, "match": "equals", "name": "parentId", "location": "query"},
@@ -402,7 +408,15 @@ def notes(model: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
         "A note on a business record. The parent is a reference (type, id and, where ids are only unique within "
         "one, a scope such as a domain), so one contract covers notes on service requests, contacts, activities "
         "and any record added later.",
-        "Note (business component chosen by parent.type)", ["list", "get", "create", "patch", "delete"], attrs,
+        "", ["list", "get", "create", "patch", "delete"], attrs,
+        varies_by="at_note_ptype",
+        source_variants=[
+            {"id": "sv_note_sr", "code": "service-request", "source_object": "Service Request Note", "source_io": "",
+             "location_prefix": "S_NOTE_SR", "description": "Notes on service requests."},
+            {"id": "sv_note_con", "code": "contact", "source_object": "Contact Note", "source_io": "",
+             "location_prefix": "S_NOTE_CON", "description": "Notes on contacts."},
+            {"id": "sv_note_act", "code": "activity", "source_object": "Action Note", "source_io": "",
+             "location_prefix": "S_NOTE_ACT", "description": "Notes on activities."}],
         column_groups=[{"id": g, "business_name": "Parent", "api_name": "parent", "many": False, "required": True,
                         "description": "The record the note belongs to. Set when the note is created; it can't be "
                                        "changed."}],

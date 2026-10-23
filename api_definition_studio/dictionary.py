@@ -20,6 +20,7 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from . import variants
 from .store import Invalid
 
 FIELDS = ["bc", "field", "table", "column", "dd", "item"]
@@ -314,25 +315,34 @@ def issues(m: Dict[str, Any], dic: "Dictionaries") -> List[Dict[str, Any]]:
         sid = e.get("source_system_id") or ""
         if not dic.has(sid):
             continue
-        if e.get("source_object") and not dic.bc_exists(sid, e["source_object"]):
-            warn(e["id"], e["business_name"], "Business component '" + e["source_object"] + "' is not in the dictionary.")
+        objs = ([(v["code"], v.get("source_object") or "") for v in e["source_variants"]]
+                if variants.has_variants(e) else [("", e.get("source_object") or "")])
+        for code, bc in objs:
+            if bc and not dic.bc_exists(sid, bc):
+                warn(e["id"], e["business_name"], "Business component '" + bc + "' is not in the dictionary"
+                     + (" (source variant " + code + ")" if code else "") + ".")
         for a in e["attributes"]:
-            bc = column_bc(e, a)
             w = e["business_name"] + " › " + a["business_name"]
             if a.get("source_object") and not dic.bc_exists(sid, a["source_object"]):
                 warn(a["id"], w, "Business component '" + a["source_object"] + "' is not in the dictionary.")
                 continue
-            if not bc or not a.get("source_field"):
-                continue
-            r = dic.field(sid, bc, a["source_field"])
-            if not r:
-                if dic.bc_exists(sid, bc):
-                    warn(a["id"], w, "BC field '" + a["source_field"] + "' is not on business component '" + bc
-                         + "' in the dictionary.")
-                continue
-            if r["dd"] and a.get("dd_reference") and a["dd_reference"].lower() != r["dd"].lower():
-                warn(a["id"], w, "DD attribute reference is " + a["dd_reference"] + "; the dictionary says " + r["dd"] + ".")
-            loc = location(r)
-            if loc and a.get("source_column") and a["source_column"].lower() != loc.lower():
-                warn(a["id"], w, "Table.column is " + a["source_column"] + "; the dictionary says " + loc + ".")
+            for v, eff in variants.mappings(e, a):
+                if eff["not_applicable"]:
+                    continue
+                bc, fld = eff["source_object"], eff["source_field"]
+                tail = " (source variant " + v["code"] + ")" if v else ""
+                if not bc or not fld:
+                    continue
+                r = dic.field(sid, bc, fld)
+                if not r:
+                    if dic.bc_exists(sid, bc):
+                        warn(a["id"], w, "BC field '" + fld + "' is not on business component '" + bc
+                             + "' in the dictionary" + tail + ".")
+                    continue
+                if r["dd"] and eff["dd_reference"] and eff["dd_reference"].lower() != r["dd"].lower():
+                    warn(a["id"], w, "DD attribute reference is " + eff["dd_reference"] + "; the dictionary says "
+                         + r["dd"] + tail + ".")
+                loc = location(r)
+                if loc and eff["source_column"] and eff["source_column"].lower() != loc.lower():
+                    warn(a["id"], w, "Table.column is " + eff["source_column"] + "; the dictionary says " + loc + tail + ".")
     return out

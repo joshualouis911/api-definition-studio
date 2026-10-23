@@ -482,8 +482,10 @@ function viewEntity(e) {
         selectField("Source system", "e-sys", sysOptions(), e.source_system_id || "", save("source_system_id"),
           srcOf(e) ? null : "Pick a source system to map source fields"),
         srcOf(e) ? (() => {
-          const tf = textField(labelsOf(e).object, "e-src", e.source_object, save("source_object"), { placeholder: labelsOf(e).ph.object || null,
-            help: dictOf(e) ? "Columns use it unless they name their own. Type a name or a physical table to search the dictionary." : null });
+          const tf = textField(labelsOf(e).object, "e-src", e.source_object, save("source_object"), {
+            placeholder: (e.source_variants || []).length ? "Varies: see Source variants" : (labelsOf(e).ph.object || null),
+            help: (e.source_variants || []).length ? "Records come from a different " + labelsOf(e).object.toLowerCase() + " by " + (e.attributes.find((x) => x.id === e.varies_by) ? colPath(e, e.attributes.find((x) => x.id === e.varies_by)) : "a column") + ": set per value under Source variants."
+              : dictOf(e) ? "Columns use it unless they name their own. Type a name or a physical table to search the dictionary." : null });
           if (dictOf(e)) { const inp = tf.querySelector("input"), at = inp.nextSibling; tf.insertBefore(suggest(inp, bcOptions(e.source_system_id)), at); }
           return tf;
         })() : null,
@@ -505,6 +507,7 @@ function viewEntity(e) {
         textField("Description", "e-desc", e.description, save("description"), { wide: true, area: true })))));
 
   root.appendChild(columnsCard(e));
+  if (srcOf(e)) root.appendChild(variantsCard(e));
   root.appendChild(linksCard(e));
   root.appendChild(previewCard(e, n));
   return root;
@@ -781,6 +784,150 @@ async function moneyCandidatesModal() {
       try { const r = await api("POST", "api/attributes/to-money", { ids, amount_type: amt.value }); await reload(); closeModal(); render(); toast(r.converted.length + " column" + (r.converted.length === 1 ? "" : "s") + " now money"); }
       catch (err) { toast(err.message, true); }
     } }, "Make money") : null].filter(Boolean));
+}
+
+/* ---------- source variants: records from different sources by a column's value ---------- */
+const VFIELDS = ["source_object", "source_field", "source_column", "dd_reference", "data_item", "transform"];
+function colPath(e, a) { const g = (e.column_groups || []).find((x) => x.id === a.group_id); return (g ? g.api_name + "." : "") + a.api_name; }
+// a column's mapping in one variant: its override where given, else its own mapping (a location without
+// a table takes the variant's table)
+function effVariant(e, a, v, ignoreOverride) {
+  const vm = ignoreOverride ? {} : ((a.variant_sources || {})[v.id] || {});
+  const out = { not_applicable: !!vm.not_applicable, inherited: [] };
+  for (const f of VFIELDS) {
+    const own = (vm[f] || "").trim();
+    if (own) { out[f] = own; continue; }
+    out.inherited.push(f);
+    if (f === "source_object") out[f] = (a.source_object || "").trim() || (v.source_object || "").trim();
+    else if (f === "source_column") {
+      const base = (a.source_column || "").trim(), pre = (v.location_prefix || "").trim();
+      out[f] = base && pre && !base.includes(".") && !base.includes(" ") ? pre + "." + base : base;
+    } else out[f] = (a[f] || "").trim();
+  }
+  return out;
+}
+function variantsCard(e) {
+  const L = labelsOf(e), dic = dictOf(e), sid = e.source_system_id;
+  const vs = e.source_variants || [];
+  const enumCols = e.attributes.filter((a) => a.type === "enum");
+  const url = "api/entities/" + e.id;
+  const body = h("div", { class: "card-body" });
+  const card = h("div", { class: "card", id: "variants" },
+    h("div", { class: "card-head" }, h("div", null, h("h2", null, "Source variants" + (vs.length ? " (" + vs.length + ")" : "")),
+      h("div", { class: "hint" }, "When records come from different " + L.object.toLowerCase() + "s by a column's value, e.g. notes by parent type. The API stays one resource; only the mapping differs."))),
+    body);
+  if (!vs.length) {
+    if (!enumCols.length) { body.appendChild(h("div", { class: "muted small" }, "Needs an enum column whose value picks the source, e.g. parent.type with service-request, contact, activity.")); return card; }
+    const sel = selectEl(enumCols.map((a) => [a.id, colPath(e, a) + "  (" + a.enum.map((v) => v.code).join(", ") + ")"]), enumCols[0].id, { "data-k": "vary-pick", style: "width:auto;min-width:260px" });
+    body.appendChild(h("div", { class: "row-actions" }, h("span", { class: "small" }, "Source varies by"), sel,
+      h("button", { class: "btn btn-sm", onclick: async () => {
+        const a = e.attributes.find((x) => x.id === sel.value);
+        const list = a.enum.map((v) => ({ code: v.code, source_object: "", source_io: "", location_prefix: "", description: "" }));
+        try { await patch(url, { varies_by: a.id, source_variants: list }); } catch (err) { toast(err.message, true); }
+      } }, "Set up a variant per value")));
+    return card;
+  }
+  const by = e.attributes.find((a) => a.id === e.varies_by);
+  const codes = by ? by.enum.map((v) => v.code) : [];
+  const save = (list) => patch(url, { source_variants: list }, true).catch((err) => toast(err.message, true));
+  const vsel = selectEl([["", "—"]].concat(enumCols.map((a) => [a.id, colPath(e, a)])), e.varies_by || "", { "data-k": "vary-by", style: "width:auto;min-width:200px" });
+  editable(vsel, e.varies_by || "", (val) => patch(url, { varies_by: val }));
+  body.appendChild(h("div", { class: "row-actions", style: "margin-bottom:10px" }, h("span", { class: "small" }, "Source varies by"), vsel,
+    h("button", { class: "btn btn-sm btn-danger", onclick: async () => {
+      if (!confirm("Remove the source variants and every column's per-variant mapping?")) return;
+      try { await patch(url, { varies_by: "", source_variants: [] }); } catch (err) { toast(err.message, true); }
+    } }, "Remove variants")));
+  const rows = vs.map((v, i) => {
+    const upd = (k) => (val) => save(vs.map((x, j) => (j === i ? Object.assign({}, x, { [k]: val }) : x)));
+    const opts = [["", "—"]].concat(codes.map((c) => [c, c]));
+    if (v.code && !codes.includes(v.code)) opts.push([v.code, v.code + " (not a value)"]);
+    const code = selectEl(opts, v.code, { "data-k": "sv-code-" + v.id }); editable(code, v.code, upd("code"));
+    const inp = (k, ph, mono) => { const x = h("input", { type: "text", class: mono ? "mono" : null, value: v[k] || "", placeholder: ph, "data-k": "sv-" + k + "-" + v.id }); editable(x, v[k], upd(k)); return x; };
+    const bc = inp("source_object", L.ph.object || L.object);
+    return h("tr", null, h("td", null, code), h("td", null, dic ? suggest(bc, bcOptions(sid)) : bc), h("td", null, inp("source_io", L.container)),
+      h("td", null, inp("location_prefix", L.location === "Table.column" ? "e.g. S_NOTE_SR" : "optional", true)), h("td", null, inp("description", "")),
+      h("td", null, h("button", { class: "icon-btn danger", title: "Remove this variant", onclick: () => save(vs.filter((_, j) => j !== i)) }, "✕")));
+  });
+  body.appendChild(h("div", { class: "table-wrap" }, h("table", { class: "cols-table", style: "min-width:0" },
+    h("thead", null, h("tr", null, [(by ? colPath(e, by) : "Value"), L.object, L.container, L.location === "Table.column" ? "Table" : "Location prefix", "Description", ""].map((x) => h("th", null, x)))),
+    h("tbody", null, rows))));
+  const missing = codes.filter((c) => !vs.some((v) => v.code === c));
+  if (missing.length) body.appendChild(h("button", { class: "btn btn-sm", style: "margin-top:8px", onclick: () =>
+    save(vs.concat(missing.map((c) => ({ code: c, source_object: "", source_io: "", location_prefix: "", description: "" })))) }, "+ Variant for " + missing.join(", ")));
+
+  body.appendChild(h("div", { class: "section-label", style: "margin-top:16px" }, "Column mapping by variant"));
+  body.appendChild(h("div", { class: "muted small", style: "margin-bottom:8px" },
+    "Grey comes from the column's own mapping (a " + L.location.toLowerCase() + " without a table gets the variant's table, so NOTE becomes S_NOTE_SR.NOTE). " +
+    "Black is set for that variant only. Click a cell to change it, or mark the field not applicable."));
+  const iss = S.issues.filter((x) => x.message.includes(" mapped for "));
+  const gridRows = e.attributes.map((a) => {
+    const warn = iss.find((x) => x.object_id === a.id);
+    return h("tr", { class: warn ? "has-warn" : null, title: warn ? warn.message : null },
+      h("td", null, h("div", null, a.business_name), h("div", { class: "mono small muted" }, colPath(e, a))),
+      vs.map((v) => {
+        const eff = effVariant(e, a, v), own = (a.variant_sources || {})[v.id];
+        const cls = (f) => (eff.inherited.includes(f) ? "inh" : "own");
+        const content = eff.not_applicable ? h("span", { class: "muted small" }, "not applicable")
+          : h("div", null,
+            eff.source_field ? h("div", { class: cls("source_field") }, eff.source_field) : (eff.transform ? null : h("div", { class: "lvl-warning small" }, "not mapped")),
+            eff.source_column ? h("div", { class: "mono small " + cls("source_column") }, eff.source_column) : null,
+            eff.transform ? h("div", { class: "small " + cls("transform"), title: eff.transform }, "ƒ " + (eff.transform.length > 46 ? eff.transform.slice(0, 44) + "…" : eff.transform)) : null,
+            eff.source_object && eff.source_object !== v.source_object ? h("div", { class: "small " + cls("source_object") }, "from " + eff.source_object) : null);
+        return h("td", { class: "vcell" + (own ? " vown" : ""), title: "Change for " + (v.code || "this variant"), onclick: () => variantCellModal(e, a, v) }, content);
+      }));
+  });
+  body.appendChild(h("div", { class: "table-wrap" }, h("table", { class: "cols-table vgrid", style: "min-width:0" },
+    h("thead", null, h("tr", null, h("th", null, "Column"), vs.map((v) => h("th", null, h("div", null, v.code || "—"),
+      h("div", { class: "small muted", style: "text-transform:none;letter-spacing:0;font-weight:400" }, [v.source_object, v.location_prefix].filter(Boolean).join(" · ")))))),
+    h("tbody", null, gridRows))));
+  return card;
+}
+function variantCellModal(e, a, v) {
+  const L = labelsOf(e), dic = dictOf(e), sid = e.source_system_id;
+  const vm = Object.assign({}, (a.variant_sources || {})[v.id] || {});
+  const base = effVariant(e, a, v, true);    // what it takes from the column's own mapping
+  const f = {};
+  const inp = (k, mono, area) => {
+    const x = h(area ? "textarea" : "input", { type: "text", class: mono ? "mono" : null, value: vm[k] || "", placeholder: base[k] || "", "data-k": "vm-" + k });
+    if (area) x.value = vm[k] || "";
+    f[k] = x; return x;
+  };
+  const fld = (label, el, help) => h("div", { class: "field" }, h("label", null, label), el, help ? h("div", { class: "help" }, help) : null);
+  inp("source_object"); inp("source_field"); inp("source_column", true); inp("dd_reference", true); inp("data_item"); inp("transform", false, true);
+  const bcNow = () => f.source_object.value.trim() || base.source_object;
+  if (dic) {
+    f.source_field.addEventListener("change", async () => {
+      const r = await dictField(sid, bcNow(), f.source_field.value.trim());
+      if (!r) return;
+      if (!f.source_column.value) f.source_column.value = dictLocation(r);
+      if (!f.dd_reference.value && r.dd && r.dd !== base.dd_reference) f.dd_reference.value = r.dd;
+      if (!f.data_item.value && r.item && r.item !== base.data_item) f.data_item.value = r.item;
+    });
+  }
+  const fieldOpts = async (q) => (await dictFields(sid, { bc: bcNow(), q, by: "field", limit: 60 })).map((r) => [r.field, [dictLocation(r), r.dd, r.item].filter(Boolean).join(" · ")]);
+  const na = h("input", { type: "checkbox", "data-k": "vm-na" }); na.checked = !!vm.not_applicable;
+  const body = h("div", null,
+    h("p", { class: "muted small", style: "margin-top:0" }, "For " + (v.code || "this variant") + " (" + (v.source_object || "no " + L.object.toLowerCase()) + "). Leave a field blank to use what is shown in grey: the column's own mapping."),
+    h("label", { class: "checks", style: "margin-bottom:10px" }, na, " Not applicable: " + (v.source_object || "this source") + " has no such field"),
+    h("div", { class: "grid" },
+      fld(L.object, dic ? suggest(f.source_object, bcOptions(sid)) : f.source_object, "Only when this column comes from another " + L.object.toLowerCase()),
+      fld(L.field, dic ? suggest(f.source_field, fieldOpts) : f.source_field),
+      fld(L.location, f.source_column),
+      fld("DD attribute", f.dd_reference),
+      fld("Data item", f.data_item),
+      h("div", { class: "field wide" }, h("label", null, "Transformation"), f.transform)));
+  const saveBtn = h("button", { class: "btn btn-primary", onclick: async () => {
+    const next = Object.assign({}, a.variant_sources || {});
+    const o = { not_applicable: na.checked };
+    VFIELDS.forEach((k) => { o[k] = f[k].value.trim(); });
+    if (VFIELDS.some((k) => o[k]) || o.not_applicable) next[v.id] = o; else delete next[v.id];
+    try { await patch("api/attributes/" + a.id, { variant_sources: next }); closeModal(); } catch (err) { toast(err.message, true); }
+  } }, "Save");
+  const clearBtn = h("button", { class: "btn", onclick: async () => {
+    const next = Object.assign({}, a.variant_sources || {}); delete next[v.id];
+    try { await patch("api/attributes/" + a.id, { variant_sources: next }); closeModal(); } catch (err) { toast(err.message, true); }
+  } }, "Use the column's mapping");
+  openModal(e.business_name + " › " + a.business_name + " · " + (v.code || "variant"), body, [h("button", { class: "btn", onclick: closeModal }, "Cancel"), clearBtn, saveBtn]);
 }
 
 /* ---------- data dictionary (e.g. the Siebel dictionary) ---------- */

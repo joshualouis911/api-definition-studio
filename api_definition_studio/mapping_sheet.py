@@ -17,7 +17,7 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
 
-from . import __version__, naming
+from . import __version__, naming, variants
 from .model import ATTRIBUTE_TYPES, CARDINALITIES, EXPOSE, OPERATIONS, SECURITY, clean_tags, derived_from
 from .source_kinds import KINDS
 from .openapi_gen import endpoints, navs_with_target
@@ -45,7 +45,7 @@ EN_COLS = [("Namespace", "namespace", 12, False), ("Source system", "source_syst
            ("Schema name", "schema_name", 16, False), ("Source object", "source_object", 20, False),
            ("Source container", "source_io", 20, False), ("Operations", "operations", 28, False),
            ("Get one by", "get_by", 10, False), ("Group", "group", 18, False), ("Tags (comma separated)", "tags", 24, False),
-           ("Description", "description", 60, False)]
+           ("Description", "description", 60, False), ("Source varies by", "varies_by_name", 16, False)]
 MAP_COLS = [("Namespace", "namespace", 11, True), ("Entity", "entity", 18, True),
             ("Schema name", "schema_name", 14, False), ("JSON path", "json_path", 30, True),
             ("Business name", "business_name", 26, False), ("API name", "api_name", 22, False),
@@ -90,6 +90,17 @@ HDR_COLS = [("Name", "name", 22, False), ("Direction", "direction", 11, False), 
 ENUM_COLS = [("Schema name", "schema_name", 14, False), ("Entity", "entity", 18, True),
              ("Column API name", "api_name", 22, False), ("Column", "column", 24, True),
              ("Code", "code", 20, False), ("Label", "label", 22, False), ("Source value", "source_value", 22, False)]
+VAR_COLS = [("Schema name", "schema_name", 16, False), ("Entity", "entity", 18, True),
+            ("Value", "code", 18, False), ("Source object", "source_object", 24, False),
+            ("Source container", "source_io", 22, False), ("Table / location prefix", "location_prefix", 20, False),
+            ("Description", "description", 50, False)]
+VMAP_COLS = [("Schema name", "schema_name", 16, False), ("Entity", "entity", 16, True),
+             ("Value", "variant", 16, False), ("Column", "column", 20, False), ("Business name", "business_name", 22, True),
+             ("Source object", "source_object", 20, False), ("Source field", "source_field", 22, False),
+             ("Source location", "source_column", 24, False), ("DD attribute reference", "dd_reference", 16, False),
+             ("Data item", "data_item", 22, False), ("Transformation", "transform", 30, False),
+             ("Not applicable", "not_applicable", 10, False),
+             ("Effective source field", "eff_field", 22, True), ("Effective location", "eff_location", 26, True)]
 EP_COLS = [("Namespace", "namespace", 11, True), ("Resource", "tag", 18, True), ("Method", "method", 8, True),
            ("Path", "path", 46, True), ("Operation ID", "operation_id", 32, True), ("Summary", "summary", 36, True),
            ("Request schema", "request", 18, True), ("Response schema", "response", 18, True),
@@ -388,6 +399,10 @@ def export_xlsx(m: Dict[str, Any]) -> bytes:
         ("• Enum code style (Namespaces sheet): UPPER_SNAKE, kebab-case, camelCase or lower_snake; enum codes in "
          "that namespace are checked against it. Source mapping in OpenAPI = N publishes the contract only "
          "(no x-source-*, DD attribute, data item or transformation).", None),
+        ("• Source varies by (Entities sheet): the column whose value picks where a record comes from, e.g. "
+         "parent.type. Source variants: one row per value with its source object and table. Variant mapping: per "
+         "value, only what differs from the Mapping sheet (blank inherits; Not applicable = Y when that source has "
+         "no such field).", None),
         ("• Endpoints: the operations the OpenAPI definition contains (generated).", None),
         ("", None),
         ("Dark blue headers can be edited and imported back into the studio. Grey headers are "
@@ -435,7 +450,8 @@ def export_xlsx(m: Dict[str, Any]) -> bytes:
     _validation(ws, NS_COLS, "source_in_openapi", ["Y", "N"], 2)
 
     en_rows = [dict(e, namespace=nss.get(e["namespace_id"], {"key": "?"})["key"],
-                    source_system=sss[e["source_system_id"]]["key"] if e.get("source_system_id") in sss else "")
+                    source_system=sss[e["source_system_id"]]["key"] if e.get("source_system_id") in sss else "",
+                    varies_by_name=variants.discriminator_path(e) if variants.has_variants(e) else "")
                for e in m["entities"]]
     ws = _sheet(wb, "Entities", EN_COLS, en_rows)
     if sss and len(",".join(x["key"] for x in sss.values())) < 250:
@@ -464,6 +480,28 @@ def export_xlsx(m: Dict[str, Any]) -> bytes:
     _validation(ws, OP_COLS, "scope", ["item", "collection"], 2)
     _validation(ws, OP_COLS, "status", ["200", "201", "202", "204"], 2)
     _validation(ws, OP_COLS, "if_match", ["Y", "N"], 2)
+    var_rows, vmap_rows = [], []
+    for e in m["entities"]:
+        if not variants.has_variants(e):
+            continue
+        for v in e["source_variants"]:
+            var_rows.append(dict(v, schema_name=e["schema_name"], entity=e["business_name"]))
+        for a in e["attributes"]:
+            for v in e["source_variants"]:
+                vm = (a.get("variant_sources") or {}).get(v["id"]) or {}
+                eff = variants.effective(e, a, v)
+                vmap_rows.append(dict({f: vm.get(f, "") for f in variants.FIELDS}, schema_name=e["schema_name"],
+                                      entity=e["business_name"], variant=v["code"], column=variants.column_path(e, a),
+                                      business_name=a["business_name"], not_applicable="Y" if vm.get("not_applicable") else "",
+                                      eff_field="n/a" if eff["not_applicable"] else eff["source_field"],
+                                      eff_location="" if eff["not_applicable"] else eff["source_column"]))
+    if var_rows:
+        _sheet(wb, "Source variants", VAR_COLS, var_rows,
+               note="One row per value of the entity's 'Source varies by' column: where those records come from.")
+        ws = _sheet(wb, "Variant mapping", VMAP_COLS, vmap_rows,
+                    note="Per source variant, only what differs from the column's mapping on the Mapping sheet; "
+                         "blank cells inherit it. Effective columns are generated.")
+        _validation(ws, VMAP_COLS, "not_applicable", ["Y", "N"], 3, 4000)
     _sheet(wb, "Endpoints", EP_COLS, endpoints(m), note="Generated from the model; ignored on import.")
 
     buf = io.BytesIO()
@@ -569,6 +607,7 @@ def import_xlsx(data: bytes, current: Optional[Dict[str, Any]] = None) -> Tuple[
     entities: List[Dict[str, Any]] = []
     by_schema: Dict[str, Dict[str, Any]] = {}
     has_tags_col = has_group_col = False
+    varies_names: List[str] = []
     for r in _read(wb["Entities"], EN_COLS):
         has_tags_col = has_tags_col or "tags" in r
         has_group_col = has_group_col or "group" in r
@@ -592,6 +631,7 @@ def import_xlsx(data: bytes, current: Optional[Dict[str, Any]] = None) -> Tuple[
             errors.append("Entities: a row has no business name.")
             continue
         entities.append(e)
+        varies_names.append(_s(r.get("varies_by_name")))   # resolved to a column once the columns are read
 
     # derive names now so Mapping rows can refer to schema names that were left blank
     from .store import fill_defaults
@@ -666,6 +706,41 @@ def import_xlsx(data: bytes, current: Optional[Dict[str, Any]] = None) -> Tuple[
         for (sch, api), a in attr_index.items():
             if a["enum"] and a["type"] != "enum":
                 notes.append(sch + "." + api + " has enum values but type " + a["type"] + "; values ignored.")
+
+    # source variants: which column picks the source, each value's source, and per-column overrides
+    for e, name in zip(entities, varies_names):
+        if name:
+            a = variants.find_column(e, name)
+            if a:
+                e["varies_by"] = a["id"]
+            else:
+                errors.append("Entities: '" + e["business_name"] + "' varies by '" + name + "', which is not one of its columns.")
+    if "Source variants" in wb.sheetnames:
+        for i, r in enumerate(_read(wb["Source variants"], VAR_COLS), 1):
+            e = by_schema.get(_s(r.get("schema_name")).lower())
+            if not e:
+                errors.append("Source variants row " + str(i) + ": unknown schema '" + _s(r.get("schema_name")) + "'.")
+                continue
+            code = _s(r.get("code"))
+            old = next((v for ce in (current or {}).get("entities", []) if ce["schema_name"].lower() == e["schema_name"].lower()
+                        for v in ce.get("source_variants") or [] if v["code"] == code), None)
+            e.setdefault("source_variants", []).append({
+                "id": old["id"] if old else new_id("sv"), "code": code, "source_object": _s(r.get("source_object")),
+                "source_io": _s(r.get("source_io")), "location_prefix": _s(r.get("location_prefix")),
+                "description": _s(r.get("description"))})
+    if "Variant mapping" in wb.sheetnames:
+        for i, r in enumerate(_read(wb["Variant mapping"], VMAP_COLS), 1):
+            e = by_schema.get(_s(r.get("schema_name")).lower())
+            v = next((x for x in (e or {}).get("source_variants") or [] if x["code"] == _s(r.get("variant"))), None)
+            a = variants.find_column(e, _s(r.get("column"))) if e else None
+            if not e or not v or not a:
+                errors.append("Variant mapping row " + str(i) + ": no " + ("entity" if not e else "source variant '"
+                              + _s(r.get("variant")) + "'" if not v else "column '" + _s(r.get("column")) + "'") + ".")
+                continue
+            vm = {f: _s(r.get(f)) for f in variants.FIELDS}
+            vm["not_applicable"] = parse_bool(r.get("not_applicable"))
+            if any(vm[f] for f in variants.FIELDS) or vm["not_applicable"]:
+                a.setdefault("variant_sources", {})[v["id"]] = vm
 
     relationships = []
     if "Linked entities" in wb.sheetnames:

@@ -584,7 +584,7 @@ How it is built, so you can do the same by hand for another resource:
 | `limit` and paging | List *Response shape* = Page (default): `limit` (1–200, default 50) and `cursor` |
 | `service-request`, not `SERVICE_REQUEST` | Namespace **Enum code style** = kebab-case |
 | No Siebel in the contract | Namespace **Source mapping in the OpenAPI** = *Leave out: contract only* |
-| Each parent type has its own Siebel store | parent.type enum **source values** name the business component and table (e.g. `Service Request Note (S_NOTE_SR)`); the mapping sheet and the *With source mapping* view keep them for the build team |
+| Each parent type has its own Siebel store | **Source variants** by parent.type: service-request → *Service Request Note* (`S_NOTE_SR`), contact → *Contact Note* (`S_NOTE_CON`), activity → *Action Note* (`S_NOTE_ACT`), each column mapped per variant (see below) |
 | A note can't move to another parent | PATCH → *Edit* → *Request content* = Selected fields only: `noteType`, `text`, `private` |
 | `GET /v1/notes/{noteId}` without the parent | `noteId` is opaque (its transformation says it carries the parent type and row id), so the API can route it |
 
@@ -592,6 +592,34 @@ Rules the schema can't express (send scopeType and scopeId together; a parent
 type that needs a scope) are in the list operation's description and return
 400. To add a parent type, add an enum value with its source value; consumers
 see one new value, nothing else changes.
+
+## Source variants: one resource, several sources
+
+When an entity's records come from different places depending on one column's
+value (notes on service requests, contacts and activities are three Siebel
+business components on three tables), keep **one** entity for the API and give
+it **source variants**. The contract doesn't change; only the mapping does.
+
+On the entity page, under **Source variants**:
+
+1. Pick the enum column the source **varies by** (e.g. `parent.type`) and
+   *Set up a variant per value*.
+2. For each value, give its business component, integration object and
+   **table** (e.g. contact → *Contact Note*, `S_NOTE_CON`).
+3. Map each column once, as usual, with the parts every source shares: BC field
+   `Note`, location `NOTE` (no table). The grid shows each variant's
+   **effective** mapping: grey is inherited, and `NOTE` becomes
+   `S_NOTE_SR.NOTE`, `S_NOTE_CON.NOTE`, `S_NOTE_ACT.NOTE`.
+4. Click a cell to override it for one variant (another BC field, table.column,
+   DD attribute, data item or transformation; the BC field list comes from that
+   variant's business component in the dictionary), or tick **Not applicable**
+   when that source has no such field.
+
+| Where | What you get |
+|---|---|
+| Issues | A value with no variant; a variant without a business component; a column unmapped in some variants ("No BC field mapped for contact, activity."); dictionary checks per variant |
+| OpenAPI (with source mapping) | `x-source-variants` on the schema (`selected-by: parent.type` and each value's object and table) and on each property (its effective field and location per value). Left out of a contract-only definition |
+| Mapping sheet | *Source varies by* on *Entities*; a *Source variants* sheet (one row per value) and a *Variant mapping* sheet (one row per column and value: overrides, plus the effective field and location, generated) |
 
 ## Contract only: leaving the source mapping out
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import datetime as dt
 from typing import Any, Dict, List
 
-from . import names as name_check, naming
+from . import names as name_check, naming, variants
 import re
 
 from .model import (ATTRIBUTE_TYPES, CARDINALITIES, ERROR_NAMES, EXPOSE, FILTER_MATCHES, GET_BY, HEADER_DIRECTIONS,
@@ -178,7 +178,8 @@ def validate(m: Dict[str, Any]) -> List[Dict[str, Any]]:
             if tok:
                 issues.append(_issue("warning", e["id"], w, "'" + nm + "' looks like a " + src["name"]
                                      + " internal name (" + tok + ")."))
-        if src and not e["source_object"]:
+        issues.extend(variants.issues(e, src, labels, _issue))
+        if src and not e["source_object"] and not variants.has_variants(e):
             issues.append(_issue("warning", e["id"], w, "No " + labels["object"].lower() + " mapped for " + src["name"] + "."))
 
         key_attrs = [a for a in e["attributes"] if a["key"]]
@@ -222,7 +223,9 @@ def validate(m: Dict[str, Any]) -> List[Dict[str, Any]]:
             if tok:
                 issues.append(_issue("warning", a["id"], aw, "'" + a["api_name"] + "' looks like a " + src["name"]
                                      + " internal name (" + tok + ")."))
-            if src and not a["source_field"] and not a["transform"]:
+            if src and variants.has_variants(e):
+                issues.extend(variants.column_issues(e, a, labels, _issue))
+            elif src and not a["source_field"] and not a["transform"]:
                 issues.append(_issue("warning", a["id"], aw, "No " + labels["field"] + " mapped."))
             fm = a.get("filter_match") or "equals"
             if fm not in FILTER_MATCHES:

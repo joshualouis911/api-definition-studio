@@ -97,6 +97,28 @@ class SourceSystem(BaseModel):
     internal_tokens: Optional[List[str]] = None  # None: the type's default list
 
 
+class VariantMapping(BaseModel):
+    """A column's source in one source variant. Blank fields inherit the column's own mapping."""
+    source_object: str = ""
+    source_field: str = ""
+    source_column: str = ""        # blank: the column's location, with the variant's table when it has none
+    dd_reference: str = ""
+    data_item: str = ""
+    transform: str = ""
+    not_applicable: bool = False   # this source has no such field
+
+
+class SourceVariant(BaseModel):
+    """One source of an entity whose records come from different places by the value of one
+    column, e.g. Note: parent.type service-request -> Service Request Note (S_NOTE_SR)."""
+    id: str = ""
+    code: str = ""                 # the varies-by column's value, e.g. service-request
+    source_object: str = ""        # business component / resource / table for this value
+    source_io: str = ""            # integration object / container
+    location_prefix: str = ""      # e.g. S_NOTE_SR: a column location NOTE becomes S_NOTE_SR.NOTE
+    description: str = ""
+
+
 class Attribute(BaseModel):
     id: str = ""
     business_name: str
@@ -125,6 +147,7 @@ class Attribute(BaseModel):
     transform: str = ""
     dd_reference: str = ""  # data dictionary attribute reference
     data_item: str = ""     # data dictionary: data item full name
+    variant_sources: Dict[str, VariantMapping] = Field(default_factory=dict)  # by source variant id
     example: str = ""
     description: str = ""
 
@@ -226,6 +249,8 @@ class Entity(BaseModel):
     y: Optional[float] = None
     attributes: List[Attribute] = Field(default_factory=list)
     column_groups: List[ColumnGroup] = Field(default_factory=list)
+    varies_by: str = ""            # attribute id (an enum) whose value picks the source variant
+    source_variants: List[SourceVariant] = Field(default_factory=list)
     op_overrides: Dict[str, OpOverride] = Field(default_factory=dict)
     actions: List[Action] = Field(default_factory=list)
 
@@ -318,6 +343,8 @@ class EntityPatch(BaseModel):
     tags: Optional[List[str]] = None
     group: Optional[str] = None
     column_groups: Optional[List[ColumnGroup]] = None
+    varies_by: Optional[str] = None
+    source_variants: Optional[List[SourceVariant]] = None
     x: Optional[float] = None
     y: Optional[float] = None
     op_overrides: Optional[Dict[str, OpOverride]] = None
@@ -411,6 +438,7 @@ class AttributePatch(BaseModel):
     transform: Optional[str] = None
     dd_reference: Optional[str] = None
     data_item: Optional[str] = None
+    variant_sources: Optional[Dict[str, VariantMapping]] = None
     example: Optional[str] = None
     description: Optional[str] = None
 
