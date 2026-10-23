@@ -53,8 +53,8 @@ def main(argv=None) -> int:
     imp.add_argument("--clash", default="link", choices=["link", "separate"],
                      help="When a name already exists: link to it (default) or import separately")
     imp.add_argument("--dry-run", action="store_true", help="Show what would be imported, change nothing")
-    exa = sub.add_parser("add-example", help="Add a worked example to a model, e.g. agreements")
-    exa.add_argument("name", help="Example name: agreements")
+    exa = sub.add_parser("add-example", help="Add a worked example to a model: agreements or notes")
+    exa.add_argument("name", help="Example name: agreements or notes")
     exa.add_argument("--data", default=None, help="Data folder holding model.json")
     gen = sub.add_parser("generate", help="Write OpenAPI, mapping sheet and diagram files from a model")
     gen.add_argument("--data", default=None, help="Data folder holding model.json")

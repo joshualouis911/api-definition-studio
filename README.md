@@ -553,6 +553,68 @@ case's agreements as a new agreement version.
 Source objects are set (party relationship, service request); the Siebel
 field for each column is left for you to fill in, and Issues lists each one.
 
+## Worked example: a generic Notes API (polymorphic parent)
+
+*Settings → Add notes example…* (or `api-definition-studio add-example notes`)
+adds one canonical **Note** resource that works for notes on any record:
+
+```
+GET /v1/notes?parentType=service-request&parentId=SR-12345&parentScopeType=domain&parentScopeId=retail-uk&limit=50
+```
+
+```json
+{
+  "noteId": "nt-3f9a1c27",
+  "parent": { "type": "service-request", "id": "SR-12345", "scopeType": "domain", "scopeId": "retail-uk" },
+  "noteType": "call",
+  "text": "Customer called to confirm the delivery date.",
+  "private": false,
+  "createdAt": "2026-10-23T09:15:00Z", "createdBy": "jsmith", "updatedAt": "2026-10-23T09:20:00Z"
+}
+```
+
+How it is built, so you can do the same by hand for another resource:
+
+| Requirement | In the studio |
+|---|---|
+| Its own API, `/v1/notes` | **Namespaces → + New namespace**: key `notes`, base path `/v1` |
+| Any parent type | Column group **parent** (*Object*, *Required in POST and PUT*) holding *Parent Type* `type` (enum: `service-request`, `contact`, `activity`; add more later), *Parent Id* `id` (required) |
+| A domain or other scope | *Parent Scope Type* `scopeType` (enum `domain`) and *Parent Scope Id* `scopeId` in the same group, optional |
+| `?parentType=…&parentId=…` | GET list → *Edit* → *Query parameters*: untick *Use the columns' filter settings*; parent.type Required as `parentType`, parent.id Required as `parentId`, scopeType and scopeId Optional as `parentScopeType`, `parentScopeId` |
+| `limit` and paging | List *Response shape* = Page (default): `limit` (1–200, default 50) and `cursor` |
+| `service-request`, not `SERVICE_REQUEST` | Namespace **Enum code style** = kebab-case |
+| No Siebel in the contract | Namespace **Source mapping in the OpenAPI** = *Leave out: contract only* |
+| Each parent type has its own Siebel store | parent.type enum **source values** name the business component and table (e.g. `Service Request Note (S_NOTE_SR)`); the mapping sheet and the *With source mapping* view keep them for the build team |
+| A note can't move to another parent | PATCH → *Edit* → *Request content* = Selected fields only: `noteType`, `text`, `private` |
+| `GET /v1/notes/{noteId}` without the parent | `noteId` is opaque (its transformation says it carries the parent type and row id), so the API can route it |
+
+Rules the schema can't express (send scopeType and scopeId together; a parent
+type that needs a scope) are in the list operation's description and return
+400. To add a parent type, add an enum value with its source value; consumers
+see one new value, nothing else changes.
+
+## Contract only: leaving the source mapping out
+
+By default the OpenAPI carries the source mapping (`x-source-*`, `x-dd-attribute`,
+`x-data-item`, `x-transform`, `x-system-column`, `x-derived`). For an API whose
+consumers should not see the source system, set the namespace's **Source
+mapping in the OpenAPI** to *Leave out: contract only*: the definition, the
+Swagger preview, the download and the bundle then leave those out. Business
+names (`title`, `x-business-name`), tags, PII and money markers stay.
+
+The **API definition** page shows *As published*, *With source mapping* or
+*Contract only*, and downloads whichever is shown. Studio REST API:
+`/api/openapi/{ns}.yaml?view=full|contract` (blank follows the namespace).
+In the mapping sheet: *Source mapping in OpenAPI* (Y/N) and *Enum code style*
+on *Namespaces*.
+
+## Enum code style
+
+Each namespace has an **Enum code style**: `UPPER_SNAKE` (default,
+`SERVICE_REQUEST`), `kebab-case` (`service-request`), `camelCase` or
+`lower_snake`. New codes typed from a label follow it, and the Issues page
+warns about codes that don't.
+
 ## Importing an ERD (logical model)
 
 *Import ERD…* (on the diagram page and under Settings) brings a logical data
@@ -733,7 +795,7 @@ The UI uses these; they are also documented at `/docs`.
 | POST / PATCH / DELETE | `/api/relationships`, `/api/relationships/{id}` | Linked entities |
 | POST | `/api/positions` | Diagram positions |
 | GET | `/api/validate` | Issues |
-| GET | `/api/openapi/{ns}.yaml`, `/api/openapi/{ns}.json` | Generated definition |
+| GET | `/api/openapi/{ns}.yaml`, `/api/openapi/{ns}.json` | Generated definition (`?view=full\|contract`) |
 | GET | `/api/endpoints`, `/api/mapping` | Operations, mapping rows |
 | GET | `/api/export/mapping.xlsx`, `/api/export/mapping.csv` | Mapping sheet |
 | POST | `/api/import/mapping?apply=false\|true` | Import a workbook (raw `.xlsx` body) |
@@ -742,7 +804,7 @@ The UI uses these; they are also documented at `/docs`.
 | POST / PATCH / DELETE | `/api/entities/{id}/actions`, `/api/actions/{id}` | Actions |
 | PATCH | `/api/entities/{id}` with `op_overrides` | Per-operation settings |
 | PATCH | `/api/relationships/{id}` with `sub_ops`, `sub_key`, `sub_overrides`, `read_only`, `nested_create` (and `inverse_…`) | Sub-resource operations and link options |
-| GET / POST | `/api/examples`, `/api/examples/agreements?apply=false\|true` | Worked examples |
+| GET / POST | `/api/examples`, `/api/examples/{agreements\|notes}?apply=false\|true` | Worked examples |
 | POST | `/api/import/erd?apply=false\|true&mode=merge\|replace&namespaces=per-area\|single&namespace_id=&operations=none\|read\|crud&clash=link\|separate` | Import an ERD (Mermaid, Markdown or HTML page as the raw body) |
 | GET | `/api/export/diagram.mmd`, `/api/export/diagram.drawio` | Diagram (`?labels=business\|api\|both&ns=cm`) |
 | GET | `/api/export/bundle.zip` | Everything |

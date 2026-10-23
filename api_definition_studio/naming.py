@@ -50,6 +50,25 @@ def upper_snake(text: str) -> str:
     return out
 
 
+ENUM_STYLES = {
+    "UPPER_SNAKE": re.compile(r"^[A-Z][A-Z0-9]*(_[A-Z0-9]+)*$"),     # SERVICE_REQUEST
+    "kebab-case": re.compile(r"^[a-z][a-z0-9]*(-[a-z0-9]+)*$"),       # service-request
+    "camelCase": re.compile(r"^[a-z][a-zA-Z0-9]*$"),                  # serviceRequest
+    "lower_snake": re.compile(r"^[a-z][a-z0-9]*(_[a-z0-9]+)*$"),      # service_request
+}
+
+
+def enum_code(text: str, style: str = "UPPER_SNAKE") -> str:
+    """An enum code from a label, in a namespace's enum code style."""
+    if style == "kebab-case":
+        return kebab(text)
+    if style == "camelCase":
+        return camel(text)
+    if style == "lower_snake":
+        return "_".join(words(text))
+    return upper_snake(text)
+
+
 def plural(word: str) -> str:
     """English plural good enough for resource names (parent -> parents)."""
     if not word:

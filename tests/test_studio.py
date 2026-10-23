@@ -2236,3 +2236,86 @@ def test_put_withdrawal_with_only_a_reason(client):
                for a in e["actions"] if a["name"] == "withdrawal")
     client.patch("/api/actions/" + act["id"], json={"request_fields": [], "request_required": []})
     assert any("none are ticked" in i["message"] for i in client.get("/api/validate").json())
+
+
+# -- notes: a resource with a polymorphic parent; enum code style; contract-only OpenAPI ----
+
+def test_notes_example(client):
+    prev = client.post("/api/examples/notes?apply=false").json()
+    assert prev["applied"] is False and prev["errors"] == 0 and prev["added"] == ["Note"]
+    assert client.post("/api/examples/notes?apply=true").json()["applied"] is True
+    m = model(client)
+    ns = next(n for n in m["namespaces"] if n["key"] == "notes")
+    assert (ns["base_path"], ns["enum_style"], ns["source_in_openapi"]) == ("/v1", "kebab-case", False)
+    doc = spec(client, "notes")
+    validate_spec(doc)
+    assert set(doc["paths"]) == {"/v1/notes", "/v1/notes/{noteId}"}
+    lst = doc["paths"]["/v1/notes"]["get"]
+    q = {p["name"]: p for p in lst["parameters"] if p.get("in") == "query"}
+    assert list(q)[:4] == ["parentType", "parentId", "parentScopeType", "parentScopeId"]
+    assert q["parentType"]["required"] and q["parentId"]["required"] and not q["parentScopeId"]["required"]
+    assert q["parentType"]["schema"]["enum"] == ["service-request", "contact", "activity"]
+    assert "createdAtFrom" in q and "limit" in q
+    sc = doc["components"]["schemas"]
+    parent = sc["Note"]["properties"]["parent"]
+    assert parent["type"] == "object" and parent["required"] == ["type", "id"]
+    assert list(parent["properties"]) == ["type", "id", "scopeType", "scopeId"]
+    assert "parent" in sc["NoteCreate"]["required"]
+    # PATCH can't move a note: only noteType, text and private
+    patch_ref = doc["paths"]["/v1/notes/{noteId}"]["patch"]["requestBody"]["content"]
+    sch = next(iter(patch_ref.values()))["schema"]["$ref"].split("/")[-1]
+    assert set(sc[sch]["properties"]) == {"noteType", "text", "private"}
+    # the published contract carries no Siebel mapping; the full view does
+    text = json.dumps(doc)
+    assert "x-source" not in text and "S_NOTE" not in text and "x-transform" not in text
+    full = client.get("/api/openapi/notes.json?view=full").json()
+    assert full["components"]["schemas"]["Note"]["properties"]["parent"]["properties"]["type"]["x-source-values"][
+        "service-request"].startswith("Service Request Note")
+    # no enum style warnings: kebab-case is the namespace's style
+    assert not [i for i in client.get("/api/validate").json() if "Enum codes" in i["message"]]
+    # adding it again changes nothing
+    again = client.post("/api/examples/notes?apply=false").json()
+    assert again["added"] == []
+
+
+def test_enum_code_style_per_namespace(client):
+    client.post("/api/entities/en_case/attributes", json={"business_name": "Channel", "type": "enum",
+                "enum": [{"code": "", "label": "Web form", "source_value": ""}, {"code": "", "label": "Phone", "source_value": ""}]})
+    attr = next(a for a in model(client)["entities"][1]["attributes"] if a["api_name"] == "channel")
+    assert [v["code"] for v in attr["enum"]] == ["WEB_FORM", "PHONE"]          # default UPPER_SNAKE
+    assert client.patch("/api/namespaces/ns_cm", json={"enum_style": "kebab-case"}).status_code == 200
+    msgs = [i["message"] for i in client.get("/api/validate").json() if "Enum codes" in i["message"]]
+    assert msgs and all("kebab-case" in x for x in msgs)                         # existing codes are flagged
+    client.post("/api/entities/en_case/attributes", json={"business_name": "Region", "type": "enum",
+                "enum": [{"code": "", "label": "North East", "source_value": ""}]})
+    attr = next(a for a in model(client)["entities"][1]["attributes"] if a["api_name"] == "region")
+    assert attr["enum"][0]["code"] == "north-east"                             # new codes follow the style
+    assert client.patch("/api/namespaces/ns_cm", json={"enum_style": "Title Case"}).status_code == 422
+    # mapping sheet round trip
+    x = client.get("/api/export/mapping.xlsx").content
+    client.patch("/api/namespaces/ns_cm", json={"enum_style": "UPPER_SNAKE"})
+    assert client.post("/api/import/mapping?apply=true", content=x).status_code == 200
+    assert model(client)["namespaces"][0]["enum_style"] == "kebab-case"
+
+
+def test_contract_only_openapi(client):
+    full = client.get("/api/openapi/cm.json").json()
+    assert "x-source-object" in full["components"]["schemas"]["Customer"]
+    c = client.get("/api/openapi/cm.json?view=contract").json()
+    validate_spec(c)
+    text = json.dumps(c)
+    for ext in ("x-source", "x-dd-attribute", "x-transform", "x-system-column", "x-data-item"):
+        assert ext not in text, ext
+    assert c["components"]["schemas"]["Customer"]["properties"]["firstName"]["x-business-name"] == "First Name"
+    assert c["paths"].keys() == full["paths"].keys()
+    assert client.get("/api/openapi/cm.json?view=nope").status_code == 422
+    # the namespace setting decides what is published, also in the bundle and the mapping sheet
+    client.patch("/api/namespaces/ns_cm", json={"source_in_openapi": False})
+    assert "x-source-object" not in client.get("/api/openapi/cm.yaml").text
+    assert "x-source-object" in client.get("/api/openapi/cm.yaml?view=full").text
+    with zipfile.ZipFile(io.BytesIO(client.get("/api/export/bundle.zip").content)) as z:
+        assert "x-source-object" not in z.read("openapi/cm-openapi.yaml").decode()
+    x = client.get("/api/export/mapping.xlsx").content
+    client.patch("/api/namespaces/ns_cm", json={"source_in_openapi": True})
+    assert client.post("/api/import/mapping?apply=true", content=x).status_code == 200
+    assert model(client)["namespaces"][0]["source_in_openapi"] is False

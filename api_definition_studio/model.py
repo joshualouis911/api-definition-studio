@@ -82,6 +82,8 @@ class Namespace(BaseModel):
     owner: str = ""
     base_path_in: str = "paths"  # "paths": /cm/v1/cases ; "server": server URL ends with /cm/v1
     servers: List[Server] = Field(default_factory=list)
+    enum_style: str = "UPPER_SNAKE"   # enum codes: UPPER_SNAKE, kebab-case, camelCase or lower_snake
+    source_in_openapi: bool = True    # False: the published OpenAPI leaves out x-source-*, DD and other mapping
 
 
 class SourceSystem(BaseModel):
@@ -288,6 +290,8 @@ class NamespacePatch(BaseModel):
     owner: Optional[str] = None
     base_path_in: Optional[str] = None
     servers: Optional[List[Server]] = None
+    enum_style: Optional[str] = None
+    source_in_openapi: Optional[bool] = None
 
 
 class SourceSystemPatch(BaseModel):

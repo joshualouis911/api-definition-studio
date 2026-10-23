@@ -72,6 +72,7 @@ def validate(m: Dict[str, Any]) -> List[Dict[str, Any]]:
     issues: List[Dict[str, Any]] = []
     ns_ids = {n["id"] for n in m["namespaces"]}
     ents = {e["id"]: e for e in m["entities"]}
+    ns_enum_style = {n["id"]: n.get("enum_style") or "UPPER_SNAKE" for n in m["namespaces"]}
     systems = {s["id"]: s for s in m.get("source_systems", [])}
 
     hnames: Dict[str, str] = {}
@@ -143,6 +144,8 @@ def validate(m: Dict[str, Any]) -> List[Dict[str, Any]]:
             issues.append(_issue("error", n["id"], w, "Unknown security scheme " + n["security"] + ".", True))
         if n.get("base_path_in", "paths") not in ("paths", "server"):
             issues.append(_issue("error", n["id"], w, "Base path placement must be 'paths' or 'server'.", True))
+        if n.get("enum_style", "UPPER_SNAKE") not in naming.ENUM_STYLES:
+            issues.append(_issue("error", n["id"], w, "Enum code style must be one of " + ", ".join(naming.ENUM_STYLES) + ".", True))
         if not n["servers"]:
             issues.append(_issue("warning", n["id"], w, "No servers configured."))
 
@@ -208,9 +211,11 @@ def validate(m: Dict[str, Any]) -> List[Dict[str, Any]]:
                 codes = [v["code"] for v in a["enum"]]
                 if len(set(codes)) != len(codes):
                     issues.append(_issue("error", a["id"], aw, "Enum codes must be unique.", True))
-                bad = [c for c in codes if not naming.UPPER_SNAKE_RE.match(c)]
+                style = ns_enum_style.get(e["namespace_id"], "UPPER_SNAKE")
+                bad = [c for c in codes if not naming.ENUM_STYLES.get(style, naming.UPPER_SNAKE_RE).match(c)]
                 if bad:
-                    issues.append(_issue("warning", a["id"], aw, "Enum codes should be UPPER_SNAKE: " + ", ".join(bad)))
+                    issues.append(_issue("warning", a["id"], aw, "Enum codes should be " + style + " (the namespace's "
+                                         "enum code style): " + ", ".join(bad)))
             if a["key"] and a["type"] not in ("string", "integer"):
                 issues.append(_issue("error", a["id"], aw, "Key column must be string or integer."))
             tok = naming.leaky(a["api_name"], tokens)

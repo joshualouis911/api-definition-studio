@@ -100,6 +100,9 @@ def fill_defaults(m: Dict[str, Any]) -> Dict[str, Any]:
             ns["base_path"] = "/" + ns["key"] + "/v1"
         ns["base_path"] = "/" + ns["base_path"].strip().strip("/") if ns["base_path"].strip("/") else ""
         ns["title"] = ns["title"] or (ns["key"].upper() + " API")
+        ns["enum_style"] = ns.get("enum_style") or "UPPER_SNAKE"
+        ns["source_in_openapi"] = ns.get("source_in_openapi", True) is not False
+    ns_style = {ns["id"]: ns["enum_style"] for ns in m["namespaces"]}
     for e in m["entities"]:
         e["id"] = e["id"] or new_id("en")
         e["business_name"] = e["business_name"].strip()
@@ -125,7 +128,7 @@ def fill_defaults(m: Dict[str, Any]) -> Dict[str, Any]:
             if a["type"] != "enum":
                 a["enum"] = []
             for v in a["enum"]:
-                v["code"] = v["code"].strip() or naming.upper_snake(v["label"])
+                v["code"] = v["code"].strip() or naming.enum_code(v["label"], ns_style.get(e["namespace_id"], "UPPER_SNAKE"))
                 v["label"] = v["label"] or v["code"]
     cards = {"one-to-many": True, "many-to-many": True}
     inverse_many = {"many-to-one": True, "many-to-many": True}

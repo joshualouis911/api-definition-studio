@@ -1314,6 +1314,33 @@ def _what(m: Dict[str, Any], src: Optional[Dict[str, Any]]) -> str:
                            "delete": "DELETE"}.get(op, op)
 
 
+# Extensions that describe where data comes from. A namespace whose source mapping is not
+# published (source_in_openapi = False), or ?view=contract, leaves them out, so consumers
+# see only the API's own concepts.
+SOURCE_EXTENSIONS = ("x-dd-attribute", "x-data-item", "x-transform", "x-system-column", "x-derived",
+                     "x-derived-from")
+
+
+def contract_only(doc: Any) -> Any:
+    """A copy of an OpenAPI document without source-mapping extensions (x-source-*, DD
+    attribute, data item, transformation, system column, derived)."""
+    if isinstance(doc, dict):
+        return {k: contract_only(v) for k, v in doc.items()
+                if not (isinstance(k, str) and (k.startswith("x-source") or k in SOURCE_EXTENSIONS))}
+    if isinstance(doc, list):
+        return [contract_only(v) for v in doc]
+    return doc
+
+
+def published(m: Dict[str, Any], ns_id: str, view: str = "") -> Dict[str, Any]:
+    """The OpenAPI for a namespace as published: with or without the source mapping, by the
+    namespace's setting unless view is 'full' or 'contract'."""
+    doc = build_openapi(m, ns_id)
+    ns = next((n for n in m["namespaces"] if n["id"] == ns_id), {})
+    strip = view == "contract" or (view != "full" and ns.get("source_in_openapi", True) is False)
+    return contract_only(doc) if strip else doc
+
+
 def path_conflicts(m: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Errors for operations left out because another setting already generates the same method and path,
     e.g. two entities with the path segment agreements both ticking List."""

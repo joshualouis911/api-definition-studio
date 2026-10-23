@@ -1,5 +1,7 @@
 """Worked examples that can be added to any model.
 
+notes: a generic Notes API, one resource for notes on any record (see notes()).
+
 agreements: a service agreements API. A service agreement sets the support
 hours a month a customer gets for one product on a case. It is held on the
 case's party relationship records and recorded directly while the case is set
@@ -15,7 +17,8 @@ from .erd_import import merge
 from .model import clean_tags
 from .store import fill_defaults
 
-EXAMPLES = {"agreements": "Service agreements: versions, changes through a service request, declarations, decision"}
+EXAMPLES = {"agreements": "Service agreements: versions, changes through a service request, declarations, decision",
+            "notes": "Notes: one resource for notes on any record, with a polymorphic parent (type, id, scope)"}
 
 
 def _attr(id_: str, business: str, api: str, type_: str = "string", **kw: Any) -> Dict[str, Any]:
@@ -288,10 +291,149 @@ def service_agreements(model: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]
     return frag, notes
 
 
+# -- notes: one canonical resource with a polymorphic parent ---------------------------
+
+def _ov(**kw: Any) -> Dict[str, Any]:
+    o = {"operation_id": "", "status": "", "request_entity_id": "", "response_entity_id": "", "request_mode": "",
+         "request_fields": [], "request_required": [], "response_mode": "", "response_fields": [],
+         "list_property": "", "query_params": None, "summary": "", "description": ""}
+    o.update(kw)
+    return o
+
+
+def _kebab_enum(*rows: str) -> List[Dict[str, str]]:
+    out = []
+    for r in rows:
+        code, label, src = (r.split("|") + [""])[:3]
+        out.append({"code": code, "label": label, "source_value": src})
+    return out
+
+
+def notes(model: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
+    """A generic Notes API: GET /v1/notes?parentType=service-request&parentId=SR-12345
+    &parentScopeType=domain&parentScopeId=retail-uk. One Note resource whose parent is a
+    reference ({type, id, scopeType, scopeId}), so notes on service requests, contacts,
+    activities or anything else share one contract. Enum codes are kebab-case and the
+    published OpenAPI leaves the Siebel mapping out."""
+    notes_: List[str] = []
+    ns = next((n for n in model["namespaces"] if n["key"] == "notes"), None)
+    namespaces = []
+    if ns:
+        ns_id = ns["id"]
+    else:
+        ns_id = "ns_notes"
+        used = {n["base_path"] for n in model["namespaces"]}
+        base = "/v1" if "/v1" not in used else "/notes/v1"
+        namespaces.append({"id": ns_id, "key": "notes", "title": "Notes API", "base_path": base, "version": "1.0.0",
+                           "description": "Notes on any business record: service requests, contacts, activities and "
+                                          "more. A note names its parent by type and id, and by a scope such as a "
+                                          "domain when the parent's id is only unique within one.",
+                           "security": "bearer", "owner": "", "base_path_in": "paths",
+                           "servers": model["namespaces"][0]["servers"] if model["namespaces"] else [],
+                           "enum_style": "kebab-case", "source_in_openapi": False})
+        notes_.append("Added the notes namespace (Notes API, " + base + "): kebab-case enum codes, source mapping "
+                      "left out of the published OpenAPI.")
+    siebel = next((s for s in model.get("source_systems", []) if s["kind"] == "siebel"), None)
+    src_systems = []
+    if siebel:
+        src = siebel["id"]
+    else:
+        src = "ss_siebel"
+        src_systems.append({"id": src, "key": "siebel", "name": "Siebel CRM", "kind": "siebel", "description": "",
+                            "owner": "", "internal_tokens": None})
+        notes_.append("Added a Siebel CRM source system.")
+
+    g = "cg_note_parent"
+    attrs = [
+        _attr("at_note_id", "Note Id", "noteId", key=True, read_only=True, system=True, example="nt-3f9a1c27",
+              pattern="^nt-[a-z0-9]{8,}$", source_field="Id", source_column="S_NOTE_*.ROW_ID",
+              transform="Opaque id that carries the parent type and the Siebel row id (e.g. base64url of "
+                        "'service-request:1-8ABC12'), so GET /notes/{noteId} finds the right table.",
+              description="Stable, opaque identifier of the note. Don't parse it."),
+        _attr("at_note_ptype", "Parent Type", "type", "enum", required=True, group_id=g,
+              enum=_kebab_enum("service-request|Service request|Service Request Note (S_NOTE_SR)",
+                               "contact|Contact|Contact Note (S_NOTE_CON)",
+                               "activity|Activity|Action Note (S_NOTE_ACT)"),
+              example="service-request",
+              transform="Routing, not a stored field: picks the business component and table (the enum's source "
+                        "values).",
+              description="The kind of record the note belongs to. New kinds are added as new values."),
+        _attr("at_note_pid", "Parent Id", "id", required=True, group_id=g, max_length=64, example="SR-12345",
+              source_field="Parent Id (by parent type)",
+              transform="Resolve the parent's public id (e.g. SR number) to its Siebel row id within the scope.",
+              description="The parent's identifier as consumers know it, e.g. the service request number."),
+        _attr("at_note_pstype", "Parent Scope Type", "scopeType", "enum", group_id=g,
+              enum=_kebab_enum("domain|Domain"), example="domain",
+              transform="Not stored on the note: says how to read scopeId.",
+              description="What scopeId names. Send it with scopeId when the parent's id is only unique within a "
+                          "scope; for a service request the domain."),
+        _attr("at_note_psid", "Parent Scope Id", "scopeId", group_id=g, max_length=64, example="retail-uk",
+              pattern="^[a-z0-9]+(-[a-z0-9]+)*$",
+              transform="Resolved to the organisation (business unit) that owns the parent record; used with "
+                        "parent.id to find it.",
+              description="The scope the parent's id belongs to, e.g. the domain retail-uk."),
+        _attr("at_note_type", "Note Type", "noteType", "enum",
+              enum=_kebab_enum("general|General|Note", "call|Call|Call", "email|Email|Email",
+                               "complaint|Complaint|Complaint"),
+              source_field="Note Type", source_column="S_NOTE_*.NOTE_TYPE", example="call"),
+        _attr("at_note_text", "Note Text", "text", required=True, max_length=16000, source_field="Note",
+              source_column="S_NOTE_*.NOTE", example="Customer called to confirm the delivery date."),
+        _attr("at_note_priv", "Private", "private", "boolean", source_field="Private",
+              source_column="S_NOTE_*.PRIVATE_FLG", transform="Y/N to true/false", example="false",
+              description="Only visible to the author's team when true."),
+        _attr("at_note_cat", "Created At", "createdAt", "date-time", read_only=True, system=True, filterable=True,
+              filter_match="range", source_field="Created", source_column="S_NOTE_*.CREATED",
+              example="2026-10-23T09:15:00Z"),
+        _attr("at_note_cby", "Created By", "createdBy", read_only=True, system=True, source_field="Created By",
+              source_column="S_NOTE_*.CREATED_BY", transform="Row id to the user's login (S_USER.LOGIN).",
+              example="jsmith"),
+        _attr("at_note_upd", "Updated At", "updatedAt", "date-time", read_only=True, system=True,
+              source_field="Updated", source_column="S_NOTE_*.LAST_UPD", example="2026-10-23T09:20:00Z"),
+    ]
+    by_parent = [{"attr_id": "at_note_ptype", "required": True, "match": "equals", "name": "parentType", "location": "query"},
+                 {"attr_id": "at_note_pid", "required": True, "match": "equals", "name": "parentId", "location": "query"},
+                 {"attr_id": "at_note_pstype", "required": False, "match": "equals", "name": "parentScopeType",
+                  "location": "query"},
+                 {"attr_id": "at_note_psid", "required": False, "match": "equals", "name": "parentScopeId",
+                  "location": "query"},
+                 {"attr_id": "at_note_cat", "required": False, "match": "range", "name": "", "location": "query"}]
+    note = _entity(
+        "en_note", ns_id, src, "Note", "note", "notes", "Note",
+        "A note on a business record. The parent is a reference (type, id and, where ids are only unique within "
+        "one, a scope such as a domain), so one contract covers notes on service requests, contacts, activities "
+        "and any record added later.",
+        "Note (business component chosen by parent.type)", ["list", "get", "create", "patch", "delete"], attrs,
+        column_groups=[{"id": g, "business_name": "Parent", "api_name": "parent", "many": False, "required": True,
+                        "description": "The record the note belongs to. Set when the note is created; it can't be "
+                                       "changed."}],
+        op_overrides={
+            "list": _ov(query_params=by_parent, summary="List the notes on a record",
+                        description="Notes on one parent record, newest first. parentType and parentId are required. "
+                                    "Send parentScopeType and parentScopeId together when the parent's id is only "
+                                    "unique within a scope (400 if only one is sent, or if the parent type needs a "
+                                    "scope and none is sent). An unknown parent returns an empty page, not 404."),
+            "create": _ov(summary="Add a note to a record",
+                          description="The parent goes in the body. 404 if the parent record doesn't exist in that "
+                                      "scope; 422 if the parent type doesn't accept notes. Returns the new noteId and "
+                                      "a Location header."),
+            "get": _ov(summary="Get one note"),
+            "patch": _ov(request_mode="fields", request_fields=["at_note_type", "at_note_text", "at_note_priv"],
+                         summary="Change a note's text, type or privacy",
+                         description="Only noteType, text and private can change. The parent is fixed: to move a "
+                                     "note, create it on the new parent and delete the old one."),
+            "delete": _ov(summary="Delete a note")},
+        tags=["Notes"], group="Notes")
+    for a in note["attributes"]:
+        a.setdefault("group_id", "")
+    frag = {"namespaces": namespaces, "source_systems": src_systems, "entities": [note], "relationships": []}
+    return frag, notes_
+
+
 def add_example(model: Dict[str, Any], name: str) -> Tuple[Dict[str, Any], List[str]]:
-    if name != "agreements":
+    builders = {"agreements": service_agreements, "notes": notes}
+    if name not in builders:
         raise KeyError(name)
-    frag, notes = service_agreements(model)
+    frag, notes_ = builders[name](model)
     base = dict(model, source_systems=list(model.get("source_systems", [])) + frag["source_systems"])
     tags = {e["schema_name"].lower(): e["tags"] for e in frag["entities"]}
     merged, merge_notes = merge(base, frag, "merge", "link")
@@ -299,5 +441,5 @@ def add_example(model: Dict[str, Any], name: str) -> Tuple[Dict[str, Any], List[
         if e["schema_name"].lower() in tags:
             e["tags"] = clean_tags((e.get("tags") or []) + tags[e["schema_name"].lower()])
     # a re-run should not duplicate anything: everything already present is linked
-    return fill_defaults(merged), notes + [n.replace("the imported columns for it were not added",
+    return fill_defaults(merged), notes_ + [n.replace("the imported columns for it were not added",
                                                       "kept its columns") for n in merge_notes]

@@ -19,7 +19,7 @@ from .model import (Action, ActionPatch, AddFromDictionary, Attribute, Attribute
                     Namespace, NamespacePatch,
                     Relationship, RelationshipPatch, Settings, SourceSystem, SourceSystemPatch, TagMembers, TagRename,
                     clean_tags)
-from .openapi_gen import build_openapi, endpoints, path_conflicts
+from .openapi_gen import build_openapi, endpoints, path_conflicts, published
 from .store import Invalid, NotFound, Store, fill_defaults, new_id
 from .validate import new_blocking, validate
 
@@ -820,14 +820,18 @@ def delete_relationship(rel_id: str) -> Response:
 
 # -- generated outputs -------------------------------------------------------------
 
-@app.get("/api/openapi/{name}", tags=["Outputs"], summary="OpenAPI for a namespace: /api/openapi/cm.yaml or cm.json")
-def get_openapi(name: str, download: bool = False) -> Response:
+@app.get("/api/openapi/{name}", tags=["Outputs"],
+         summary="OpenAPI for a namespace: /api/openapi/cm.yaml or cm.json. view=full keeps the source mapping, "
+                 "view=contract leaves it out; blank follows the namespace's setting")
+def get_openapi(name: str, download: bool = False, view: str = "") -> Response:
+    if view not in ("", "full", "contract"):
+        raise HTTPException(422, "view must be full or contract")
     key, _, ext = name.rpartition(".")
     if ext not in ("json", "yaml", "yml") or not key:
         key, ext = name, "json"
     m = store().load()
     n = _ns_by_key(m, key)
-    doc = build_openapi(m, n["id"])
+    doc = published(m, n["id"], view)
     headers = {}
     if download:
         headers["Content-Disposition"] = 'attachment; filename="' + n["key"] + "-openapi." + ("json" if ext == "json" else "yaml") + '"'
@@ -970,7 +974,7 @@ def bundle(m: Dict[str, Any], labels: str = "business") -> bytes:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
         for n in m["namespaces"]:
-            doc = build_openapi(m, n["id"])
+            doc = published(m, n["id"])
             z.writestr("openapi/" + n["key"] + "-openapi.yaml", to_yaml(doc))
             z.writestr("openapi/" + n["key"] + "-openapi.json", json.dumps(doc, indent=2, ensure_ascii=False))
         z.writestr("mapping/mapping.xlsx", mapping_sheet.export_xlsx(m))

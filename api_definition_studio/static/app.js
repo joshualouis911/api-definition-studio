@@ -16,7 +16,7 @@ const S = {
   model: null, issues: [], route: { view: "entity", id: null },
   diag: { labels: "business", ns: "", src: "", tags: [], linked: false, cols: "all", groups: true, z: 1, px: 0, py: 0, fitted: false },
   navTag: "",
-  apiv: { ns: null, fmt: "yaml" }, mapFilter: "", importPreview: null,
+  apiv: { ns: null, fmt: "yaml", view: "" }, mapFilter: "", importPreview: null,
 };
 
 /* ---------- helpers ---------- */
@@ -44,6 +44,15 @@ function camel(t) { const w = words(t); if (!w.length) return ""; let s = w[0] +
 function pascal(t) { const c = camel(t); return c ? c[0].toUpperCase() + c.slice(1) : ""; }
 function kebab(t) { return words(t).join("-"); }
 function upperSnake(t) { return words(t).map((w) => w.toUpperCase()).join("_"); }
+// an enum code from a label, in the namespace's enum code style
+function enumCode(t, style) {
+  if (style === "kebab-case") return words(t).join("-");
+  if (style === "camelCase") return camel(t);
+  if (style === "lower_snake") return words(t).join("_");
+  return upperSnake(t);
+}
+const ENUM_STYLES = [["UPPER_SNAKE", "UPPER_SNAKE (SERVICE_REQUEST)"], ["kebab-case", "kebab-case (service-request)"],
+  ["camelCase", "camelCase (serviceRequest)"], ["lower_snake", "lower_snake (service_request)"]];
 function plural(w) {
   if (!w) return w; const l = w.toLowerCase();
   const irr = { person: "people", child: "children", status: "statuses", address: "addresses", analysis: "analyses" };
@@ -982,15 +991,16 @@ function columnModal(eid, aid) {
   const showMatch = () => { matchHelp.textContent = matchExample(a.api_name, f.match.value); f.match.disabled = !f.filter.value; };
   f.match.onchange = showMatch; f.filter.onchange = showMatch; showMatch();
   let values = a.enum.map((v) => Object.assign({}, v));
+  const enumStyle = (M().namespaces.find((x) => x.id === e.namespace_id) || {}).enum_style || "UPPER_SNAKE";
   const enumBox = h("div");
   const drawEnum = () => {
     enumBox.innerHTML = "";
     if (f.type.value !== "enum") { enumBox.appendChild(h("div", { class: "muted small" }, "Enum values apply when the type is enum.")); return; }
     enumBox.appendChild(h("div", { class: "enum-row muted small" }, h("span", null, "API code"), h("span", null, "Label"), h("span", null, sourced ? "Source value (" + L.code_list + ")" : "Source value"), h("span")));
     values.forEach((v, i) => {
-      const c = h("input", { type: "text", class: "mono", value: v.code, placeholder: "CODE" }); c.oninput = () => (v.code = c.value);
+      const c = h("input", { type: "text", class: "mono", value: v.code, placeholder: enumCode("Code", enumStyle) }); c.oninput = () => (v.code = c.value);
       const l = h("input", { type: "text", value: v.label, placeholder: "Label" });
-      l.oninput = () => { const auto = !v.code || v.code === upperSnake(v._prevLabel || ""); v.label = l.value; if (auto) { v.code = upperSnake(l.value); c.value = v.code; } v._prevLabel = l.value; };
+      l.oninput = () => { const auto = !v.code || v.code === enumCode(v._prevLabel || "", enumStyle); v.label = l.value; if (auto) { v.code = enumCode(l.value, enumStyle); c.value = v.code; } v._prevLabel = l.value; };
       v._prevLabel = v.label;
       const s = h("input", { type: "text", value: v.source_value, placeholder: "as stored in source" }); s.oninput = () => (v.source_value = s.value);
       enumBox.appendChild(h("div", { class: "enum-row" }, c, l, s, h("button", { class: "icon-btn danger", title: "Remove", onclick: () => { values.splice(i, 1); drawEnum(); } }, "✕")));
@@ -1070,7 +1080,7 @@ function columnModal(eid, aid) {
     body.filterable = !!f.filter.value; body.filter_required = f.filter.value === "required"; body.filter_match = f.match.value;
     body.type = f.type.value; body.max_length = f.max_length.value ? parseInt(f.max_length.value, 10) : null;
     body.description = f.description.value;
-    body.enum = body.type === "enum" ? values.filter((v) => v.code || v.label).map((v) => ({ code: v.code || upperSnake(v.label), label: v.label, source_value: v.source_value })) : [];
+    body.enum = body.type === "enum" ? values.filter((v) => v.code || v.label).map((v) => ({ code: v.code || enumCode(v.label, enumStyle), label: v.label, source_value: v.source_value })) : [];
     try { await patch("api/attributes/" + a.id, body); closeModal(); } catch (err) { toast(err.message, true); }
   } }, "Save column");
   openModal(e.business_name + " › " + a.business_name, body, [h("button", { class: "btn", onclick: closeModal }, "Cancel"), saveBtn]);
@@ -1283,7 +1293,7 @@ function previewCard(e, n) {
   wrap.appendChild(h("div", { class: "card" },
     h("div", { class: "card-head" }, h("h2", null, "Example " + e.schema_name), h("span", { class: "hint" }, "From the column examples")), ex));
   if (!n) return wrap;
-  Promise.all([api("GET", "api/openapi/" + n.key + ".json"), api("GET", "api/endpoints")]).then(([doc, all]) => {
+  Promise.all([api("GET", "api/openapi/" + n.key + ".json?view=full"), api("GET", "api/endpoints")]).then(([doc, all]) => {
     const sch = doc.components.schemas[e.schema_name];
     ex.innerHTML = highlightJson(JSON.stringify(sch ? sch.example : {}, null, 2));
     const mine = all.filter((x) => x.entity_id === e.id);
@@ -1767,6 +1777,11 @@ function viewNamespaces() {
           selectField("Base path goes in", n.id + "bpi", [["paths", "Paths (/cm/v1/cases)"], ["server", "Server URL"]], n.base_path_in || "paths", sv("base_path_in"), exampleUrl),
           selectField("Security", n.id + "sec", SECURITY, n.security, sv("security")),
           textField("Owner", n.id + "own", n.owner, sv("owner")),
+          selectField("Enum code style", n.id + "enst", ENUM_STYLES, n.enum_style || "UPPER_SNAKE", sv("enum_style"),
+            "How enum values are written in this API, e.g. ?parentType=service-request with kebab-case"),
+          selectField("Source mapping in the OpenAPI", n.id + "srcoa", [["yes", "Include (x-source-…, DD, transformation)"], ["no", "Leave out: contract only"]],
+            n.source_in_openapi === false ? "no" : "yes", (v) => patch(url, { source_in_openapi: v === "yes" }),
+            "Leave out for an API whose consumers should not see the source system's tables and fields"),
           textField("Description", n.id + "desc", n.description, sv("description"), { wide: true, area: true })),
         h("div", { class: "section-label", style: "margin-top:16px" }, "Servers"), servers,
         h("div", { class: "section-label" }, "Entities (" + ents.length + ")"),
@@ -2056,10 +2071,14 @@ function viewApi() {
   const n = M().namespaces.find((x) => x.key === S.apiv.ns);
   const nsSeg = h("div", { class: "seg" }, M().namespaces.map((x) => h("button", { class: x.key === S.apiv.ns ? "on" : null, onclick: () => { S.apiv.ns = x.key; render(); } }, x.key)));
   const fmtSeg = h("div", { class: "seg" }, ["yaml", "json"].map((x) => h("button", { class: x === S.apiv.fmt ? "on" : null, onclick: () => { S.apiv.fmt = x; render(); } }, x.toUpperCase())));
+  const pubLabel = n.source_in_openapi === false ? "As published (contract only)" : "As published (with source mapping)";
+  const viewSeg = h("div", { class: "seg", title: "Source mapping: x-source-…, DD attribute, data item, transformation" },
+    [["", pubLabel], ["full", "With source mapping"], ["contract", "Contract only"]].map(([v, l]) => h("button", { class: (S.apiv.view || "") === v ? "on" : null, onclick: () => { S.apiv.view = v; render(); } }, l)));
+  const vq = S.apiv.view ? "view=" + S.apiv.view : "";
   const errs = S.issues.filter((i) => i.level === "error");
   root.appendChild(h("div", { class: "page-head" },
     h("div", null, h("h1", null, "API definition"), h("div", { class: "sub" }, "OpenAPI 3.0.3, generated from the model each time. Business names and source mapping travel as title and x-… extensions.")),
-    h("div", { class: "row-actions" }, nsSeg, fmtSeg)));
+    h("div", { class: "row-actions" }, nsSeg, viewSeg, fmtSeg)));
   if (errs.length) root.appendChild(h("div", { class: "callout err" }, errs.length + " error(s) in the model may make this definition incomplete. ", h("button", { class: "link-btn", onclick: () => go("issues") }, "See issues")));
   const eps = h("div", { class: "table-wrap" });
   const code = h("pre", { class: "code" }, "Loading…");
@@ -2069,12 +2088,12 @@ function viewApi() {
     h("div", { class: "card-head" }, h("div", null, h("h2", null, n.key + "-openapi." + S.apiv.fmt), fp),
       h("div", { class: "row-actions" },
         h("button", { class: "btn btn-sm", onclick: async () => { try { await navigator.clipboard.writeText(code.textContent); toast("Copied"); } catch (_) { toast("Copy not allowed here; use download", true); } } }, "Copy"),
-        h("button", { class: "btn btn-sm", onclick: () => download("api/openapi/" + n.key + ".yaml?download=true") }, "Download YAML"),
-        h("button", { class: "btn btn-sm", onclick: () => download("api/openapi/" + n.key + ".json?download=true") }, "Download JSON"),
+        h("button", { class: "btn btn-sm", onclick: () => download("api/openapi/" + n.key + ".yaml?download=true" + (vq ? "&" + vq : "")) }, "Download YAML"),
+        h("button", { class: "btn btn-sm", onclick: () => download("api/openapi/" + n.key + ".json?download=true" + (vq ? "&" + vq : "")) }, "Download JSON"),
         h("a", { class: "btn btn-sm", href: "preview/" + n.key, target: "_blank", rel: "noopener", title: "Swagger UI loads from cdn.jsdelivr.net" }, "Swagger preview ↗"))),
     code));
   api("GET", "api/endpoints").then((all) => { eps.innerHTML = ""; const mine = all.filter((x) => x.namespace === n.key); eps.appendChild(mine.length ? endpointTable(mine) : h("div", { class: "empty" }, "No operations yet.")); });
-  fetch("api/openapi/" + n.key + "." + S.apiv.fmt).then((r) => r.text()).then((t) => {
+  fetch("api/openapi/" + n.key + "." + S.apiv.fmt + (vq ? "?" + vq : "")).then((r) => r.text()).then((t) => {
     code.innerHTML = S.apiv.fmt === "json" ? highlightJson(t) : highlightYaml(t);
     const m = t.match(/x-model-fingerprint["']?:\s*["']?([0-9a-f]+)/); if (m) fp.textContent = "  fingerprint " + m[1];
   });
@@ -2196,6 +2215,7 @@ function viewSettings() {
           h("button", { class: "btn", onclick: () => fileIn.click() }, "Import model.json…"), fileIn,
           h("button", { class: "btn", onclick: erdImportModal }, "Import ERD…"),
           h("button", { class: "btn", onclick: () => exampleModal("agreements", "Service agreements API") }, "Add service agreements example…"),
+          h("button", { class: "btn", onclick: () => exampleModal("notes", "Notes API") }, "Add notes example…"),
           h("button", { class: "btn", onclick: () => download("api/export/bundle.zip") }, "Download all outputs (.zip)"),
           h("button", { class: "btn btn-danger", onclick: async () => {
             if (!confirm("Replace the model with the starter example (Contact as customer, Case, Address)? The current model is backed up first.")) return;

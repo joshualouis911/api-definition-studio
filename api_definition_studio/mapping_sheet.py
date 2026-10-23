@@ -17,7 +17,7 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
 
-from . import __version__
+from . import __version__, naming
 from .model import ATTRIBUTE_TYPES, CARDINALITIES, EXPOSE, OPERATIONS, SECURITY, clean_tags, derived_from
 from .source_kinds import KINDS
 from .openapi_gen import endpoints, navs_with_target
@@ -34,7 +34,8 @@ NS_COLS = [("Key", "key", 10, False), ("Title", "title", 28, False), ("Base path
            ("Base path placement", "base_path_in", 18, False), ("Version", "version", 10, False),
            ("Security", "security", 12, False), ("Owner", "owner", 20, False),
            ("Servers (url | description, one per line)", "servers", 48, False),
-           ("Description", "description", 50, False)]
+           ("Description", "description", 50, False), ("Enum code style", "enum_style", 16, False),
+           ("Source mapping in OpenAPI", "source_in_openapi", 16, False)]
 SS_COLS = [("Key", "key", 12, False), ("Name", "name", 24, False), ("Type", "kind", 12, False),
            ("Owner", "owner", 20, False), ("Internal name tokens (comma separated)", "internal_tokens", 36, False),
            ("Description", "description", 50, False)]
@@ -384,6 +385,9 @@ def export_xlsx(m: Dict[str, Any]) -> bytes:
          "Schema.column; 'customerNumber as clientRef' renames the parameter.", None),
         ("• Get one by (Entities sheet): path for /things/{id}, query for /things?id=.", None),
         ("• Tags (Entities sheet): comma separated, e.g. Agreements, Case. Used to filter the diagram.", None),
+        ("• Enum code style (Namespaces sheet): UPPER_SNAKE, kebab-case, camelCase or lower_snake; enum codes in "
+         "that namespace are checked against it. Source mapping in OpenAPI = N publishes the contract only "
+         "(no x-source-*, DD attribute, data item or transformation).", None),
         ("• Endpoints: the operations the OpenAPI definition contains (generated).", None),
         ("", None),
         ("Dark blue headers can be edited and imported back into the studio. Grey headers are "
@@ -420,10 +424,15 @@ def export_xlsx(m: Dict[str, Any]) -> bytes:
     nss = {n["id"]: n for n in m["namespaces"]}
     sss = {x["id"]: x for x in m.get("source_systems", [])}
     ns_rows = [dict(n, servers="\n".join(s["url"] + (" | " + s["description"] if s["description"] else "")
-                                       for s in n["servers"])) for n in m["namespaces"]]
+                                       for s in n["servers"]),
+                    enum_style=n.get("enum_style") or "UPPER_SNAKE",
+                    source_in_openapi="N" if n.get("source_in_openapi", True) is False else "Y")
+               for n in m["namespaces"]]
     ws = _sheet(wb, "Namespaces", NS_COLS, ns_rows)
     _validation(ws, NS_COLS, "security", SECURITY, 2)
     _validation(ws, NS_COLS, "base_path_in", ["paths", "server"], 2)
+    _validation(ws, NS_COLS, "enum_style", list(naming.ENUM_STYLES), 2)
+    _validation(ws, NS_COLS, "source_in_openapi", ["Y", "N"], 2)
 
     en_rows = [dict(e, namespace=nss.get(e["namespace_id"], {"key": "?"})["key"],
                     source_system=sss[e["source_system_id"]]["key"] if e.get("source_system_id") in sss else "")
@@ -550,7 +559,9 @@ def import_xlsx(data: bytes, current: Optional[Dict[str, Any]] = None) -> Tuple[
         namespaces.append({"key": _s(r.get("key")), "title": _s(r.get("title")), "base_path": _s(r.get("base_path")),
                            "base_path_in": _s(r.get("base_path_in")) or "paths",
                            "version": _s(r.get("version")) or "1.0.0", "security": _s(r.get("security")) or "bearer",
-                           "owner": _s(r.get("owner")), "description": _s(r.get("description")), "servers": servers})
+                           "owner": _s(r.get("owner")), "description": _s(r.get("description")), "servers": servers,
+                           "enum_style": _s(r.get("enum_style")) or "UPPER_SNAKE",
+                           "source_in_openapi": _s(r.get("source_in_openapi")).upper() not in ("N", "NO", "FALSE")})
     for n in namespaces:
         n["id"] = "ns_" + n["key"].replace("-", "_")
     ns_by_key = {n["key"]: n for n in namespaces}
