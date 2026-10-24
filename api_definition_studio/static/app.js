@@ -2231,6 +2231,7 @@ function viewApi() {
   const code = h("pre", { class: "code" }, "Loading…");
   const fp = h("span", { class: "hint mono" });
   root.appendChild(h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", null, "Operations — " + n.title)), eps));
+  root.appendChild(lintCard(n, vq));
   root.appendChild(h("div", { class: "card" },
     h("div", { class: "card-head" }, h("div", null, h("h2", null, n.key + "-openapi." + S.apiv.fmt), fp),
       h("div", { class: "row-actions" },
@@ -2245,6 +2246,74 @@ function viewApi() {
     const m = t.match(/x-model-fingerprint["']?:\s*["']?([0-9a-f]+)/); if (m) fp.textContent = "  fingerprint " + m[1];
   });
   return root;
+}
+
+/* ---------- API style checks (Spectral) ---------- */
+const SEV_CLASS = { error: "lvl-error", warning: "lvl-warning", info: "muted", hint: "muted" };
+function lintCard(n, vq) {
+  const out = h("div", { class: "card-body" });
+  const last = (S.lint || {})[n.key + "|" + (S.apiv.view || "")];
+  const runBtn = h("button", { class: "btn btn-primary btn-sm", onclick: async () => {
+    runBtn.disabled = true; runBtn.textContent = "Checking…";
+    try {
+      const r = await api("POST", "api/lint/" + n.key + (vq ? "?" + vq : ""));
+      S.lint = Object.assign({}, S.lint, { [n.key + "|" + (S.apiv.view || "")]: r });
+      render();
+    } catch (err) { toast(err.message, true); runBtn.disabled = false; runBtn.textContent = "Run checks"; }
+  } }, "Run checks");
+  const draw = (r) => {
+    out.innerHTML = "";
+    if (!r.available) {
+      out.appendChild(h("div", { class: "callout warn" }, r.message,
+        h("div", { class: "small", style: "margin-top:6px" }, "Then run the checks again. The command line has the same check: ", h("code", null, "api-definition-studio lint"))));
+      return;
+    }
+    const s = r.summary;
+    out.appendChild(h("div", { class: "stats", style: "margin:0 0 10px" },
+      [["error", "Errors"], ["warning", "Warnings"], ["info", "Info"]].map(([k, l]) => h("div", { class: "stat" }, h("b", { class: s[k] && k !== "info" ? SEV_CLASS[k] : null }, String(s[k] || 0)), " " + l)),
+      h("span", { class: "muted small", style: "align-self:center" }, (r.ruleset === "uploaded" ? "Your ruleset" : "Starter ruleset") + " · " + r.view + " · " + r.command)));
+    if (!r.findings.length) { out.appendChild(h("div", { class: "empty" }, "✓ No findings: the definition meets every rule in the ruleset.")); return; }
+    out.appendChild(h("div", { class: "table-wrap" }, h("table", null,
+      h("thead", null, h("tr", null, ["", "Rule", "Where", "Finding", "Line"].map((x) => h("th", null, x)))),
+      h("tbody", null, r.findings.map((f) => h("tr", null,
+        h("td", { class: SEV_CLASS[f.severity] + " small", style: "white-space:nowrap" }, f.severity),
+        h("td", { class: "mono small" }, f.rule),
+        h("td", null, f.entity_id ? h("button", { class: "link-btn", style: "text-align:left", onclick: () => (f.attr_id ? columnModal(f.entity_id, f.attr_id) : go("entity", f.entity_id)) }, f.where)
+          : h("span", { class: "mono small" }, f.where)),
+        h("td", null, f.message),
+        h("td", { class: "mono small muted" }, f.line > 0 ? String(f.line) : "")))))));
+  };
+  if (last) draw(last);
+  else out.appendChild(h("div", { class: "muted small" }, "Checks the definition shown above against the API style rules (Settings → API style rules) with Spectral, the open-source OpenAPI linter."));
+  return h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", null, "Style checks (Spectral)"),
+    h("div", { class: "row-actions" }, h("button", { class: "btn btn-sm", onclick: () => go("settings") }, "Rules…"), runBtn)), out);
+}
+function rulesCard() {
+  const box = h("div", { class: "card-body" }, h("div", { class: "muted small" }, "Loading…"));
+  const fileIn = h("input", { type: "file", accept: ".yaml,.yml,.json", style: "display:none", onchange: async () => {
+    const file = fileIn.files[0]; if (!file) return;
+    try { await api("PUT", "api/lint/ruleset", await file.text(), true); toast("Ruleset uploaded: " + file.name); fill(); }
+    catch (err) { toast(err.message, true); }
+    fileIn.value = "";
+  } });
+  const fill = async () => {
+    const r = await api("GET", "api/lint/ruleset");
+    box.innerHTML = "";
+    box.appendChild(h("p", { class: "small", style: "margin-top:0" },
+      r.custom ? h("b", null, "Your uploaded ruleset is in use. ") : h("span", null, h("b", null, "The starter ruleset is in use: "),
+        "Spectral's recommended OpenAPI rules, rules from the GDS API technical and data standards, and the studio's house conventions. It is a starting point, not an organisation's official standard: upload your own ruleset to replace or extend it. "),
+      "An uploaded ruleset can build on the starter one with ", h("code", null, 'extends: ["./studio.spectral.yaml"]'), "."));
+    box.appendChild(h("p", { class: "small " + (r.available ? "muted" : "lvl-warning") },
+      r.available ? "Spectral runs with: " + r.command : "Spectral isn't installed on this machine. Install Node.js, then run npm install -g @stoplight/spectral-cli (or set ADS_SPECTRAL to the spectral command)."));
+    box.appendChild(h("div", { class: "row-actions" },
+      h("button", { class: "btn", onclick: () => fileIn.click() }, "Upload ruleset…"), fileIn,
+      h("button", { class: "btn", onclick: () => download("api/lint/ruleset/download") }, "Download the ruleset in use"),
+      r.custom ? h("button", { class: "btn", onclick: () => download("api/lint/ruleset/download?starter=true") }, "Download the starter ruleset") : null,
+      r.custom ? h("button", { class: "btn btn-danger", onclick: async () => { if (!confirm("Go back to the starter ruleset?")) return; await api("DELETE", "api/lint/ruleset"); toast("Starter ruleset in use"); fill(); } }, "Use the starter ruleset") : null));
+    box.appendChild(h("details", { style: "margin-top:10px" }, h("summary", { class: "small" }, "Show the rules"), h("pre", { class: "code", style: "max-height:420px;overflow:auto" }, r.text)));
+  };
+  fill().catch((err) => { box.innerHTML = ""; box.appendChild(h("div", { class: "callout err" }, err.message)); });
+  return h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", null, "API style rules (Spectral)")), box);
 }
 
 /* ---------- mapping sheet ---------- */
@@ -2355,6 +2424,7 @@ function viewSettings() {
         h("div", { class: "field" }, h("label", null, "Source systems"),
           h("button", { class: "btn", onclick: () => go("sources") }, "Manage source systems (" + M().source_systems.length + ")"),
           h("div", { class: "help" }, "Each entity picks one; recorded as x-source-system in the definitions"))))),
+    rulesCard(),
     h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", null, "Model file")),
       h("div", { class: "card-body" },
         h("div", { class: "row-actions" },

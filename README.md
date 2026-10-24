@@ -636,6 +636,57 @@ The **API definition** page shows *As published*, *With source mapping* or
 In the mapping sheet: *Source mapping in OpenAPI* (Y/N) and *Enum code style*
 on *Namespaces*.
 
+## API style checks (Spectral)
+
+The studio checks its generated OpenAPI with [Spectral](https://github.com/stoplightio/spectral),
+the open-source OpenAPI linter, against a ruleset you control.
+
+- **API definition** page → **Style checks** → *Run checks*: errors, warnings
+  and info for the definition shown (as published, with or without source
+  mapping). Each finding names the rule and links to the entity or column.
+- **Settings → API style rules**: see the rules, **upload your organisation's
+  ruleset**, download it, or go back to the starter one.
+- Command line, e.g. in a pipeline:
+
+  ```bash
+  api-definition-studio lint --data ./studio-data                 # exit 1 on errors
+  api-definition-studio lint --model model.json --fail-on warning --format json
+  api-definition-studio lint --ns notes --view contract --ruleset our-rules.yaml
+  ```
+
+Spectral is a Node.js tool and isn't bundled. The studio uses `$ADS_SPECTRAL`
+if set, else `spectral` on the PATH (`npm install -g @stoplight/spectral-cli`),
+else `npx @stoplight/spectral-cli@6` when Node.js is installed. Without any of
+them, the page and the command say how to install it; nothing else changes.
+
+**The starter ruleset** (`api_definition_studio/rulesets/studio.spectral.yaml`)
+is a starting point, not any organisation's official standard:
+
+| Rules | What they check |
+|---|---|
+| `spectral:oas` recommended | Spectral's standard OpenAPI checks (operation ids, descriptions, tags, unused components, valid examples, …) |
+| `gds-*` | From the [GDS API technical and data standards](https://www.gov.uk/guidance/gds-api-technical-and-data-standards): OpenAPI 3, HTTPS servers, no basic authentication, API keys discouraged, JSON bodies, version in the URL, ISO 8601 date and time formats, documented error responses, described parameters |
+| `house-*` | The conventions the studio generates: kebab-case paths, camelCase properties, query parameters and operation ids, hyphenated header names, RFC 9457 `application/problem+json` errors, the `request-id` header on every operation, no source internals (`X_`, `S_`, `ATTRIB`, `ROW_ID`) in names, and (info) source mapping left in a published contract |
+
+To use your own standard, upload a ruleset. It can build on the starter one
+and switch rules off:
+
+```yaml
+extends: ["./studio.spectral.yaml"]
+rules:
+  house-standard-headers: off          # we use x-correlation-id instead
+  my-org-version-header:
+    given: $.paths[*][*].parameters[?(@.in == 'header')].name
+    then: { function: pattern, functionOptions: { notMatch: "^api-version$" } }
+```
+
+The bundle (*Download all outputs*, `generate`) includes the ruleset beside the
+definitions (`openapi/.spectral.yaml`, or your `spectral.yaml`), so anyone can
+run `spectral lint -r openapi/.spectral.yaml openapi/*-openapi.yaml`. Every
+generated operation now has a description, and request, response and page
+schemas nothing refers to are left out, so the studio's own output passes
+Spectral's recommended rules.
+
 ## Enum code style
 
 Each namespace has an **Enum code style**: `UPPER_SNAKE` (default,
@@ -836,6 +887,8 @@ The UI uses these; they are also documented at `/docs`.
 | POST | `/api/import/erd?apply=false\|true&mode=merge\|replace&namespaces=per-area\|single&namespace_id=&operations=none\|read\|crud&clash=link\|separate` | Import an ERD (Mermaid, Markdown or HTML page as the raw body) |
 | GET | `/api/export/diagram.mmd`, `/api/export/diagram.drawio` | Diagram (`?labels=business\|api\|both&ns=cm`) |
 | GET | `/api/export/bundle.zip` | Everything |
+| POST | `/api/lint/{ns}?view=full\|contract` | Style checks with Spectral |
+| GET / PUT / DELETE | `/api/lint/ruleset` | The Spectral ruleset in use (PUT: YAML body; DELETE: back to the starter) |
 
 ## Tests
 

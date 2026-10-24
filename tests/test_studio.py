@@ -1,4 +1,6 @@
 import io
+import os
+import shutil
 import json
 import zipfile
 
@@ -1548,7 +1550,7 @@ def test_write_parameters_leave_the_body(client):
     assert "personId" not in sc["CreateAgreementRequest"]["properties"]
     assert "personId" not in sc["CreateAgreementRequest"].get("required", [])
     assert "hoursPerMonth" in sc["CreateAgreementRequest"]["properties"]
-    assert "personId" in sc["AgreementCreate"]["properties"]            # the shared schema is unchanged
+    assert "AgreementCreate" not in sc        # no operation sends the whole create form now, so it is left out
     put = doc["paths"]["/cm/v1/agreements/{agreementId}"]["put"]
     hp = [p for p in put["parameters"] if p.get("name") == "person-id"]
     assert hp and hp[0]["in"] == "header" and hp[0]["required"] is True
@@ -2382,3 +2384,118 @@ def test_source_variants(client):
     client.patch("/api/entities/" + case["id"], json={"varies_by": ids["serviceType"], "source_variants": []})
     case = next(e for e in model(client)["entities"] if e["schema_name"] == "Case")
     assert all(a["variant_sources"] == {} for a in case["attributes"])
+
+
+# -- API style checks (Spectral) ----------------------------------------------------
+
+def test_every_operation_has_a_description_and_unused_forms_are_left_out(client):
+    client.post("/api/examples/agreements?apply=true")
+    doc = spec(client)
+    for path, item in doc["paths"].items():
+        for method, op in item.items():
+            if method != "parameters":
+                assert (op.get("description") or "").strip(), method + " " + path
+    assert "AddressUpdate" not in doc["components"]["schemas"]       # nothing sends it
+    assert "Address" in doc["components"]["schemas"]                  # entity schemas are always kept
+    get_ = doc["paths"]["/cm/v1/cases/{caseId}"]["patch"]["description"]
+    assert "If-Match" in get_ and "merge patch" in get_
+
+
+def test_lint_ruleset_endpoints(client):
+    r = client.get("/api/lint/ruleset").json()
+    assert r["custom"] is False and "gds-servers-https" in r["text"]
+    assert client.put("/api/lint/ruleset", content=b"just: [not a ruleset").status_code == 422
+    assert client.put("/api/lint/ruleset", content=b"- a list").status_code == 422
+    mine = b'extends: ["./studio.spectral.yaml"]\nrules:\n  house-standard-headers: off\n'
+    r = client.put("/api/lint/ruleset", content=mine)
+    assert r.status_code == 200 and r.json()["custom"] is True
+    d = client.get("/api/lint/ruleset/download")
+    assert d.text == mine.decode() and 'filename="spectral.yaml"' in d.headers["content-disposition"]
+    assert "gds-openapi-3" in client.get("/api/lint/ruleset/download?starter=true").text
+    with zipfile.ZipFile(io.BytesIO(client.get("/api/export/bundle.zip").content)) as z:
+        assert z.read("openapi/spectral.yaml").decode() == mine.decode() and "openapi/studio.spectral.yaml" in z.namelist()
+    assert client.delete("/api/lint/ruleset").json()["custom"] is False
+    with zipfile.ZipFile(io.BytesIO(client.get("/api/export/bundle.zip").content)) as z:
+        assert "gds-openapi-3" in z.read("openapi/.spectral.yaml").decode()
+
+
+def test_lint_without_spectral(client, monkeypatch):
+    from api_definition_studio import lint
+    monkeypatch.setattr(lint, "command", lambda: None)
+    r = client.post("/api/lint/cm").json()
+    assert r["available"] is False and "npm install -g @stoplight/spectral-cli" in r["message"]
+    assert client.get("/api/lint/ruleset").json()["available"] is False
+    assert client.post("/api/lint/cm?view=raw").status_code == 422
+
+
+def _fake_spectral(monkeypatch, results):
+    """Stand in for the spectral command: write the given results where -o says."""
+    import subprocess as sp
+    from api_definition_studio import lint
+    seen = {}
+    monkeypatch.setattr(lint, "command", lambda: ["spectral"])
+
+    def fake_run(cmd, **kw):
+        seen["cmd"] = cmd
+        seen["ruleset"] = Path(cmd[cmd.index("-r") + 1]).read_text()
+        seen["doc"] = Path(cmd[-1]).read_text()
+        Path(cmd[cmd.index("-o") + 1]).write_text(json.dumps(results))
+        return sp.CompletedProcess(cmd, 1, "", "")
+    monkeypatch.setattr(lint.subprocess, "run", fake_run)
+    return seen
+
+
+def test_lint_results_are_read_and_located(client, monkeypatch):
+    client.post("/api/examples/notes?apply=true")
+    res = [
+        {"code": "house-properties-camel-case", "message": "x", "severity": 1,
+         "path": ["components", "schemas", "Customer", "properties", "firstName"], "range": {"start": {"line": 9}}},
+        {"code": "gds-version-in-url", "message": "v", "severity": 1, "path": [], "range": {"start": {"line": 0}}},
+        {"code": "gds-version-in-url", "message": "v", "severity": 1, "path": [], "range": {"start": {"line": 0}}},
+        {"code": "gds-servers-https", "message": "https", "severity": 0, "path": ["servers", "0", "url"]},
+        {"code": "operation-description", "message": "d", "severity": 2, "path": ["paths", "/cm/v1/cases", "get"]}]
+    seen = _fake_spectral(monkeypatch, res)
+    r = client.post("/api/lint/cm?view=contract").json()
+    assert r["available"] and r["summary"] == {"error": 1, "warning": 2, "info": 1, "hint": 0}
+    assert [f["rule"] for f in r["findings"]][0] == "gds-servers-https"          # errors first
+    cam = next(f for f in r["findings"] if f["rule"] == "house-properties-camel-case")
+    assert cam["entity_id"] == "en_contact" and cam["where"] == "Contact › First Name" and cam["line"] == 10
+    assert next(f for f in r["findings"] if f["rule"] == "operation-description")["where"] == "GET /cm/v1/cases"
+    assert "x-source" not in seen["doc"] and "gds-openapi-3" in seen["ruleset"]
+    # a column inside a group is found through its group
+    from api_definition_studio import lint
+    m = model(client)
+    ns = next(n for n in m["namespaces"] if n["key"] == "notes")
+    loc = lint.locate(m, ns["id"], ["components", "schemas", "NoteCreate", "properties", "parent", "properties", "id"])
+    assert loc["attr_id"] == "at_note_pid" and loc["where"] == "Note › Parent Id"
+
+
+def test_cli_lint(tmp_path, monkeypatch, capsys):
+    from api_definition_studio.cli import main as cli
+    seen = _fake_spectral(monkeypatch, [{"code": "gds-servers-https", "message": "Use https", "severity": 0,
+                                         "path": ["servers", "0", "url"], "range": {"start": {"line": 4}}}])
+    data = tmp_path / "data"
+    assert cli(["lint", "--data", str(data), "--ns", "cm"]) == 1
+    out = capsys.readouterr().out
+    assert "ERROR" in out and "gds-servers-https" in out and "(line 5)" in out
+    assert cli(["lint", "--data", str(data), "--fail-on", "never", "--format", "json"]) == 0
+    assert json.loads(capsys.readouterr().out)["cm"][0]["rule"] == "gds-servers-https"
+    rules = tmp_path / "mine.yaml"
+    rules.write_text("rules: {}\nextends: [spectral:oas]\n")
+    cli(["lint", "--data", str(data), "--ruleset", str(rules), "--fail-on", "never"])
+    assert seen["ruleset"].startswith("rules: {}")
+    assert cli(["lint", "--data", str(data), "--ns", "nope"]) == 2
+
+
+@pytest.mark.skipif(not (os.environ.get("ADS_SPECTRAL") or shutil.which("spectral")),
+                    reason="Spectral is not installed (set ADS_SPECTRAL to run this)")
+def test_lint_with_real_spectral(client):
+    client.post("/api/examples/agreements?apply=true")
+    client.post("/api/examples/notes?apply=true")
+    for ns, view in (("cm", "full"), ("notes", "")):
+        r = client.post("/api/lint/" + ns + ("?view=" + view if view else "")).json()
+        assert r["available"], r.get("message")
+        assert r["summary"]["error"] == 0 and r["summary"]["warning"] == 0, r["findings"][:5]
+    full = client.post("/api/lint/cm?view=full").json()
+    assert any(f["rule"] == "house-contract-without-source-mapping" for f in full["findings"])
+    assert client.post("/api/lint/notes").json()["findings"] == []          # published contract-only: clean

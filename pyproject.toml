@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "api-definition-studio"
-version = "1.26.0"
+version = "1.27.0"
 description = "Design API resources over source-system entities and generate OpenAPI, a mapping sheet and a data model diagram"
 readme = "README.md"
 license = { text = "MIT" }
@@ -38,4 +38,4 @@ api-definition-studio = "api_definition_studio.cli:main"
 packages = ["api_definition_studio"]
 
 [tool.setuptools.package-data]
-api_definition_studio = ["static/*"]
+api_definition_studio = ["static/*", "rulesets/*"]

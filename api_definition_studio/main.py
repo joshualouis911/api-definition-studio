@@ -13,7 +13,7 @@ from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import __version__, diagram, dictionary, erd_import, examples, mapping_sheet, names, naming, source_kinds
+from . import __version__, diagram, dictionary, erd_import, examples, lint, mapping_sheet, names, naming, source_kinds
 from .model import (Action, ActionPatch, AddFromDictionary, Attribute, AttributeIds, GroupMembers, AttributePatch, Entity, EntityPatch, Header,
                     HeaderPatch, Model,
                     Namespace, NamespacePatch,
@@ -820,6 +820,57 @@ def delete_relationship(rel_id: str) -> Response:
 
 # -- generated outputs -------------------------------------------------------------
 
+# -- API style checks (Spectral) -------------------------------------------------------
+
+@app.get("/api/lint/ruleset", tags=["Style checks"], summary="The Spectral ruleset in use, and whether Spectral can run here")
+def get_ruleset() -> Dict[str, Any]:
+    text, custom = lint.ruleset_text(store().dir)
+    cmd = lint.command()
+    return {"text": text, "custom": custom, "available": bool(cmd), "command": " ".join(cmd[:3]) if cmd else ""}
+
+
+@app.put("/api/lint/ruleset", tags=["Style checks"], summary="Use your own Spectral ruleset (YAML as the raw body)")
+async def put_ruleset(request: Request) -> Dict[str, Any]:
+    text = (await request.body()).decode("utf-8", "replace")
+    try:
+        lint.save_ruleset(store().dir, text)
+    except ValueError as err:
+        raise Invalid(str(err))
+    return get_ruleset()
+
+
+@app.delete("/api/lint/ruleset", tags=["Style checks"], summary="Go back to the studio's starter ruleset")
+def delete_ruleset() -> Dict[str, Any]:
+    lint.reset_ruleset(store().dir)
+    return get_ruleset()
+
+
+@app.get("/api/lint/ruleset/download", tags=["Style checks"], summary="Download the ruleset in use")
+def download_ruleset(starter: bool = False) -> Response:
+    text, custom = lint.ruleset_text(store().dir)
+    if starter:
+        text, custom = lint.STARTER.read_text(encoding="utf-8"), False
+    name = "spectral.yaml" if custom else "studio.spectral.yaml"
+    return Response(text, media_type="application/yaml", headers={"Content-Disposition": 'attachment; filename="' + name + '"'})
+
+
+@app.post("/api/lint/{ns_key}", tags=["Style checks"],
+          summary="Check a namespace's OpenAPI with Spectral (view: blank = as published, full or contract)")
+def run_lint(ns_key: str, view: str = "") -> Dict[str, Any]:
+    if view not in ("", "full", "contract"):
+        raise Invalid("view must be full or contract")
+    m = store().load()
+    n = _ns_by_key(m, ns_key)
+    try:
+        res = lint.run(to_yaml(published(m, n["id"], view)), store().dir)
+    except lint.LintUnavailable as err:
+        return {"available": False, "message": str(err), "findings": [], "summary": {}}
+    for f in res["findings"]:
+        f.update(lint.locate(m, n["id"], f["path"]))
+    summary = {k: sum(1 for f in res["findings"] if f["severity"] == k) for k in ("error", "warning", "info", "hint")}
+    return dict(res, available=True, summary=summary, namespace=n["key"], view=view or "published")
+
+
 @app.get("/api/openapi/{name}", tags=["Outputs"],
          summary="OpenAPI for a namespace: /api/openapi/cm.yaml or cm.json. view=full keeps the source mapping, "
                  "view=contract leaves it out; blank follows the namespace's setting")
@@ -970,7 +1021,7 @@ def export_drawio(labels: str = "business", ns: Optional[str] = None,
                     headers={"Content-Disposition": 'attachment; filename="data-model.drawio"'})
 
 
-def bundle(m: Dict[str, Any], labels: str = "business") -> bytes:
+def bundle(m: Dict[str, Any], labels: str = "business", data_dir: Optional[Path] = None) -> bytes:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
         for n in m["namespaces"]:
@@ -982,6 +1033,10 @@ def bundle(m: Dict[str, Any], labels: str = "business") -> bytes:
         z.writestr("diagram/data-model.mmd", diagram.mermaid(m, labels))
         z.writestr("diagram/data-model.drawio", diagram.drawio(m, labels))
         z.writestr("model.json", json.dumps(m, indent=2, ensure_ascii=False))
+        rules, custom = lint.ruleset_text(data_dir) if data_dir else (lint.STARTER.read_text(encoding="utf-8"), False)
+        z.writestr("openapi/" + ("spectral.yaml" if custom else ".spectral.yaml"), rules)
+        if custom:
+            z.writestr("openapi/studio.spectral.yaml", lint.STARTER.read_text(encoding="utf-8"))
         issues = validate(m)
         z.writestr("validation.txt", "\n".join(i["level"].upper() + "  " + i["where"] + ": " + i["message"]
                                                for i in issues) or "No issues.\n")
@@ -992,5 +1047,5 @@ def bundle(m: Dict[str, Any], labels: str = "business") -> bytes:
 def export_bundle(labels: str = "business") -> Response:
     m = store().load()
     name = naming.kebab(m["settings"].get("title") or "api") + "-definitions.zip"
-    return Response(bundle(m, labels), media_type="application/zip",
+    return Response(bundle(m, labels, store().dir), media_type="application/zip",
                     headers={"Content-Disposition": 'attachment; filename="' + name + '"'})

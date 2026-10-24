@@ -1,0 +1,217 @@
+# API Definition Studio: starter Spectral ruleset
+#
+# A starting point, not any organisation's official API standard. It has:
+#   - Spectral's recommended OpenAPI rules;
+#   - rules from the GDS API technical and data standards (gov.uk), marked gds-;
+#   - the house conventions the studio follows, marked house-.
+# Replace or extend it with your organisation's own rules: in the studio,
+# Settings -> API style rules, upload a ruleset. An uploaded ruleset can build on
+# this one with:   extends: ["./studio.spectral.yaml"]
+# and switch a rule off with:   rules: { house-standard-headers: off }
+#
+# Run it yourself:  spectral lint -r studio.spectral.yaml openapi/cm-openapi.yaml
+
+extends: [["spectral:oas", "recommended"]]
+
+rules:
+  # ---- GDS API technical and data standards --------------------------------
+  gds-openapi-3:
+    description: Describe the API with OpenAPI 3.
+    message: "Use OpenAPI 3 (found {{value}})."
+    severity: error
+    given: $.openapi
+    then:
+      function: pattern
+      functionOptions: { match: "^3\\." }
+
+  gds-servers-https:
+    description: Serve the API over HTTPS only.
+    message: "Server URL must use https: {{value}}"
+    severity: error
+    given: $.servers[*].url
+    then:
+      function: pattern
+      functionOptions: { match: "^https://" }
+
+  gds-no-basic-auth:
+    description: Never use HTTP basic authentication.
+    severity: error
+    given: $.components.securitySchemes[?(@.type == 'http')].scheme
+    then:
+      function: pattern
+      functionOptions: { notMatch: "/^basic$/i" }
+
+  gds-api-key-discouraged:
+    description: Prefer OAuth 2.0 or mutual TLS to API keys.
+    message: API keys are discouraged; prefer OAuth 2.0 or mutual TLS.
+    severity: warn
+    given: $.components.securitySchemes[*].type
+    then:
+      function: pattern
+      functionOptions: { notMatch: "^apiKey$" }
+
+  gds-json-responses:
+    description: Return JSON.
+    message: "Response media type {{property}} is not JSON."
+    severity: warn
+    given: $.paths[*][*].responses[*].content
+    then:
+      field: "@key"
+      function: pattern
+      functionOptions: { match: "^application/([a-z0-9.+-]+\\+)?json$" }
+
+  gds-json-requests:
+    description: Accept JSON.
+    message: "Request media type {{property}} is not JSON."
+    severity: warn
+    given: $.paths[*][*].requestBody.content
+    then:
+      field: "@key"
+      function: pattern
+      functionOptions: { match: "^application/([a-z0-9.+-]+\\+)?json$" }
+
+  gds-version-in-url:
+    description: Put the major version in the URL, e.g. /v1 (in the paths or the server URL).
+    message: No version such as /v1 in the paths or the server URLs.
+    severity: warn
+    given: $
+    then:
+      function: schema
+      functionOptions:
+        schema:
+          anyOf:
+            - required: [servers]
+              properties:
+                servers:
+                  type: array
+                  minItems: 1
+                  items: { properties: { url: { pattern: "/v[0-9]+(/|$)" } } }
+            - properties:
+                paths: { propertyNames: { pattern: "/v[0-9]+(/|$)" } }
+
+  gds-dates-iso-8601:
+    description: Dates and times use ISO 8601 (format date or date-time).
+    message: "{{property}} looks like a date or time but has no date/date-time format."
+    severity: warn
+    given: $..properties[?(@property.match(/(Date|At|Time|On)$/) && @.type == 'string')]
+    then:
+      function: schema
+      functionOptions:
+        schema:
+          required: [format]
+          properties: { format: { enum: [date, date-time, time] } }
+
+  gds-error-responses-documented:
+    description: Document the error responses each operation can return.
+    message: Operation documents no 4xx error response.
+    severity: warn
+    given: $.paths[*][get,put,post,patch,delete].responses
+    then:
+      function: schema
+      functionOptions:
+        schema:
+          not: { propertyNames: { not: { pattern: "^4" } } }
+
+  gds-parameter-description:
+    description: Describe every parameter.
+    severity: warn
+    given: $.paths[*][*].parameters[*]
+    then:
+      field: description
+      function: truthy
+
+  # ---- house conventions (what the studio generates) ------------------------
+  house-paths-kebab-case:
+    description: Path segments are lower-case kebab-case; parameters are {camelCase}.
+    message: "Path {{property}} is not kebab-case."
+    severity: warn
+    given: $.paths
+    then:
+      field: "@key"
+      function: pattern
+      functionOptions: { match: "^(/([a-z0-9]+(-[a-z0-9]+)*|\\{[a-z][a-zA-Z0-9]*\\}))+$" }
+
+  house-properties-camel-case:
+    description: JSON property names are camelCase.
+    message: "Property {{property}} is not camelCase."
+    severity: warn
+    given: $..properties[*]~
+    then:
+      function: casing
+      functionOptions: { type: camel }
+
+  house-query-parameters-camel-case:
+    description: Query parameter names are camelCase.
+    severity: warn
+    given: $..parameters[?(@.in == 'query')].name
+    then:
+      function: casing
+      functionOptions: { type: camel }
+
+  house-header-names:
+    description: Header names are hyphenated words, e.g. request-id or If-Match.
+    severity: warn
+    given: $..parameters[?(@.in == 'header')].name
+    then:
+      function: pattern
+      functionOptions: { match: "^[A-Za-z][A-Za-z0-9]*(-[A-Za-z0-9]+)*$" }
+
+  house-operation-id-camel-case:
+    description: operationId is camelCase, e.g. listNotes.
+    severity: warn
+    given: $.paths[*][get,put,post,patch,delete].operationId
+    then:
+      function: casing
+      functionOptions: { type: camel }
+
+  house-errors-problem-json:
+    description: Error responses are RFC 9457 problem details (application/problem+json).
+    message: "Error response {{path}} should be application/problem+json."
+    severity: warn
+    given: $.paths[*][*].responses[?(@property.match(/^[45]/))].content
+    then:
+      field: "@key"
+      function: enumeration
+      functionOptions: { values: [application/problem+json] }
+
+  house-standard-headers:
+    description: Every operation takes the standard request-id header (switch off or change to match your standard).
+    message: Operation does not take the request-id header.
+    severity: warn
+    given: $.paths[*][get,put,post,patch,delete]
+    then:
+      field: parameters
+      function: schema
+      functionOptions:
+        schema:
+          type: array
+          contains:
+            type: object
+            required: [name, in]
+            properties: { name: { const: request-id }, in: { const: header } }
+
+  house-no-source-internals-in-names:
+    description: Property and parameter names don't expose source internals (Siebel X_, S_, ATTRIB, ROW_ID).
+    message: "{{value}} looks like a source system's internal name."
+    severity: warn
+    given:
+      - $..properties[*]~
+      - $..parameters[*].name
+    then:
+      function: pattern
+      functionOptions: { notMatch: "/^(x_|s_|attrib|row_?id|bc_)/i" }
+
+  house-contract-without-source-mapping:
+    description: A published contract doesn't carry source mapping (x-source-*); publish it contract-only if consumers shouldn't see the source.
+    message: Schema carries source mapping (x-source-...); publish contract-only if consumers shouldn't see it.
+    severity: info
+    given: $.components.schemas[*]
+    then:
+      function: schema
+      functionOptions:
+        schema:
+          not:
+            anyOf:
+              - { required: [x-source-system] }
+              - { required: [x-source-object] }
+              - { required: [x-source-variants] }

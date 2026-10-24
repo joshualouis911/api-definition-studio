@@ -173,6 +173,50 @@ def attr_schema(a: Dict[str, Any], src: Optional[Dict[str, Any]] = None,
     return s
 
 
+def default_description(method: str, op: Dict[str, Any]) -> str:
+    """A plain description for an operation that has none, from what it does."""
+    ok = next((r for c, r in op.get("responses", {}).items() if c.startswith("2")), {})
+    sch = next(iter((ok.get("content") or {}).values()), {}).get("schema", {})
+    ref_ = sch.get("$ref", "")
+    if_match = any(p.get("name") == "If-Match" for p in op.get("parameters", []))
+    lock = " Send If-Match with the ETag from your last read; 412 if the record changed since." if if_match else ""
+    summary = (op.get("summary") or "").rstrip(".")
+    if method == "get" and ref_.endswith("Page"):
+        return summary + ". Returns one page of records at a time; pass nextCursor as cursor for the next page."
+    if method == "get" and sch.get("type") == "array":
+        return summary + ". Returns every matching record as an array."
+    if method == "get" and ref_.endswith("List"):
+        return summary + ". Returns every matching record in one object."
+    if method == "get":
+        return summary + ". The ETag header carries the record's version."
+    if method == "post" and "201" in op.get("responses", {}):
+        return summary + ". Returns 201 Created with the new record's Location." + lock
+    if method == "put":
+        return summary + ": the body replaces the whole record." + lock
+    if method == "patch":
+        return summary + ": only the fields sent change (JSON merge patch)." + lock
+    if method == "delete":
+        return summary + "." + lock
+    return summary + "." + lock
+
+
+DERIVED_SCHEMA_RE = re.compile(r"(Create|Update|Page|List|Request|Response)$")
+
+
+def prune_unused_schemas(doc: Dict[str, Any]) -> None:
+    """Drop generated request, response and page schemas nothing refers to (e.g. an embedded
+    entity's Update form when no PATCH sends it). Entity schemas themselves are kept."""
+    schemas = doc.get("components", {}).get("schemas", {})
+    while True:
+        text = json.dumps({k: v for k, v in doc.items()})
+        used = set(re.findall(r'#/components/schemas/([A-Za-z0-9_.-]+)"', text))
+        drop = [k for k in schemas if k not in used and DERIVED_SCHEMA_RE.search(k)]
+        if not drop:
+            return
+        for k in drop:
+            del schemas[k]
+
+
 def resource_path(n: Dict[str, Any], e: Dict[str, Any], with_base: bool) -> str:
     base = n["base_path"] if with_base else ""
     return base + "/" + e["plural"]
@@ -1161,6 +1205,13 @@ def build_openapi(m: Dict[str, Any], ns_id: str, trace: Optional[List[Dict[str, 
                 rh["required"] = True
             hdr_resp[cname] = (hd, rh)
 
+    # every operation gets a description (style checkers such as Spectral expect one)
+    for _path, item in paths.items():
+        for method, op in item.items():
+            if method == "parameters" or (op.get("description") or "").strip():
+                continue
+            op["description"] = default_description(method, op)
+
     # say in each operation's description which columns it takes as parameters
     for _path, item in paths.items():
         for method, op in item.items():
@@ -1262,6 +1313,7 @@ def build_openapi(m: Dict[str, Any], ns_id: str, trace: Optional[List[Dict[str, 
     if sec_schemes:
         comps["securitySchemes"] = sec_schemes
     doc["components"] = comps
+    prune_unused_schemas(doc)
     return doc
 
 

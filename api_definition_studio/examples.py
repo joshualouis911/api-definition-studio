@@ -328,7 +328,7 @@ def notes(model: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
                            "description": "Notes on any business record: service requests, contacts, activities and "
                                           "more. A note names its parent by type and id, and by a scope such as a "
                                           "domain when the parent's id is only unique within one.",
-                           "security": "bearer", "owner": "", "base_path_in": "paths",
+                           "security": "bearer", "owner": "API team", "base_path_in": "paths",
                            "servers": model["namespaces"][0]["servers"] if model["namespaces"] else [],
                            "enum_style": "kebab-case", "source_in_openapi": False})
         notes_.append("Added the notes namespace (Notes API, " + base + "): kebab-case enum codes, source mapping "

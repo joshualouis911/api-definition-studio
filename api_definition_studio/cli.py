@@ -62,6 +62,16 @@ def main(argv=None) -> int:
     gen.add_argument("--out", default="generated", help="Output folder")
     gen.add_argument("--labels", default="business", choices=["business", "api", "both"])
     gen.add_argument("--strict", action="store_true", help="Exit 1 if the model has errors")
+    lnt = sub.add_parser("lint", help="Check the OpenAPI definitions with Spectral (needs Spectral or Node.js)")
+    lnt.add_argument("--data", default=None, help="Data folder holding model.json (and an uploaded spectral.yaml)")
+    lnt.add_argument("--model", default=None, help="Path to a model.json (instead of --data)")
+    lnt.add_argument("--ns", action="append", default=[], help="Namespace key to check (repeat; default: all)")
+    lnt.add_argument("--view", default="", choices=["", "full", "contract"],
+                     help="blank: as published (default); full: with source mapping; contract: without")
+    lnt.add_argument("--ruleset", default=None, help="A Spectral ruleset file to use instead")
+    lnt.add_argument("--format", default="text", choices=["text", "json"])
+    lnt.add_argument("--fail-on", default="error", choices=["error", "warning", "never"],
+                     help="Exit 1 when there are findings this severe (default error)")
     args = p.parse_args(argv)
 
     if args.cmd in (None, "run"):
@@ -141,6 +151,9 @@ def main(argv=None) -> int:
         print("Saved " + str(st.path.resolve()) + " (previous model backed up alongside).")
         return 0
 
+    if args.cmd == "lint":
+        return _lint(args)
+
     from .main import bundle
     from .store import Store, fill_defaults
     from .validate import validate
@@ -150,7 +163,7 @@ def main(argv=None) -> int:
         m = Store(args.data).load()
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(BytesIO(bundle(m, args.labels))) as z:
+    with zipfile.ZipFile(BytesIO(bundle(m, args.labels, None if args.model else Store(args.data).dir))) as z:
         z.extractall(out)
     issues = validate(m)
     errs = [i for i in issues if i["level"] == "error"]
@@ -159,6 +172,43 @@ def main(argv=None) -> int:
     print("Wrote " + str(out.resolve()) + " (" + str(len(errs)) + " errors, "
           + str(len(issues) - len(errs)) + " warnings)")
     return 1 if (args.strict and errs) else 0
+
+
+def _lint(args) -> int:
+    from . import lint
+    from .main import to_yaml
+    from .openapi_gen import published
+    from .store import Store, fill_defaults
+    data_dir = None if args.model else Store(args.data).dir
+    m = fill_defaults(json.loads(Path(args.model).read_text(encoding="utf-8"))) if args.model else Store(args.data).load()
+    nss = [n for n in m["namespaces"] if not args.ns or n["key"] in args.ns]
+    if not nss:
+        print("No namespace " + ", ".join(args.ns) + " in the model.", file=sys.stderr)
+        return 2
+    results, worst = {}, set()
+    for n in nss:
+        try:
+            res = lint.run(to_yaml(published(m, n["id"], args.view)), data_dir,
+                           ruleset_file=Path(args.ruleset) if args.ruleset else None)
+        except lint.LintUnavailable as err:
+            print(str(err), file=sys.stderr)
+            return 2
+        for f in res["findings"]:
+            f.update(lint.locate(m, n["id"], f["path"]))
+            worst.add(f["severity"])
+        results[n["key"]] = res["findings"]
+    if args.format == "json":
+        print(json.dumps(results, indent=2))
+    else:
+        for key, rows in results.items():
+            print(key + ": " + (str(len(rows)) + " finding(s)" if rows else "no findings"))
+            for f in rows:
+                print("  " + f["severity"].upper().ljust(8) + f["rule"] + "  " + f["where"] + ": " + f["message"]
+                      + (" (line " + str(f["line"]) + ")" if f["line"] > 0 else ""))
+    if args.fail_on == "never":
+        return 0
+    bad = {"error"} if args.fail_on == "error" else {"error", "warning"}
+    return 1 if worst & bad else 0
 
 
 if __name__ == "__main__":
